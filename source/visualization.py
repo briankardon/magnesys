@@ -799,9 +799,9 @@ class Visualizer:
         if plotter is None:
             return
 
-        # Remove all loop geometry actors and rebuild
-        # (plotter.clear() would also remove plane/line widgets, so we
-        #  remove only the mesh actors by clearing and re-adding everything)
+        # Save and restore camera to prevent visual flash during rebuild
+        cam_pos = plotter.camera_position
+
         plotter.clear_actors()
 
         self._field_actor = None
@@ -809,6 +809,7 @@ class Visualizer:
         self._update_field()
 
         plotter.add_axes()
+        plotter.camera_position = cam_pos
 
         # Refresh the tree to show updated values (e.g. re-normalized normals)
         self._refresh_loops_tree()
