@@ -3,6 +3,7 @@
 import sys
 
 import numpy as np
+import pyqtgraph as pg
 import pyvista as pv
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
@@ -16,12 +17,14 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QSlider,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
 from pyvistaqt import QtInteractor
 
 from . import project
+from .path import LineSegmentPath
 
 
 class Visualizer:
@@ -45,12 +48,22 @@ class Visualizer:
         "#d23be7",  # purple
     ]
 
+    # Colors for B-field plot curves
+    _PLOT_COLORS = {
+        "Bx": "#e6261f",
+        "By": "#4355db",
+        "Bz": "#49da9a",
+        "|B|": "#222222",
+    }
+
+    N_PATH_SAMPLES = 200
+
     def __init__(self, simulation):
         self.simulation = simulation
         self._plotter = None
         self._window = None
         self._field_actor = None
-        self._project_path = None  # path to current .mag file
+        self._project_path = None
 
         # State tracked for updating
         self._grid_extents = None
@@ -65,6 +78,13 @@ class Visualizer:
         self._slice_normal = np.array([0.0, 0.0, 1.0])
         self._slice_origin = np.array([0.0, 0.0, 0.0])
         self._plane_widget = None
+
+        # Sample path state
+        self._sample_path = None
+        self._sample_line_enabled = False
+        self._line_widget = None
+        self._plot_widget = None
+        self._plot_curves = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -129,22 +149,32 @@ class Visualizer:
         window.resize(1400, 900)
         self._window = window
 
-        # Menu bar
         self._build_menu_bar(window)
 
-        # Central widget with horizontal layout: [3D viewport | controls]
+        # Central widget: [left: 3D + plot | right: controls]
         central = QWidget()
         window.setCentralWidget(central)
         hlayout = QHBoxLayout(central)
         hlayout.setContentsMargins(0, 0, 0, 0)
 
-        # 3D viewport
-        plotter = QtInteractor(central)
+        # Left side: vertical splitter with 3D viewport on top, plot below
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        plotter = QtInteractor(splitter)
         plotter.set_background(background)
-        hlayout.addWidget(plotter, stretch=4)
+        splitter.addWidget(plotter)
         self._plotter = plotter
 
-        # Controls panel
+        self._plot_widget = self._build_plot_widget()
+        splitter.addWidget(self._plot_widget)
+        self._plot_widget.setVisible(False)  # hidden until sample line enabled
+
+        splitter.setStretchFactor(0, 3)  # 3D viewport gets more space
+        splitter.setStretchFactor(1, 1)
+
+        hlayout.addWidget(splitter, stretch=4)
+
+        # Right side: controls panel
         panel = self._build_control_panel()
         hlayout.addWidget(panel, stretch=0)
 
@@ -176,7 +206,6 @@ class Visualizer:
         grid_group = QGroupBox("Grid")
         grid_layout = QVBoxLayout(grid_group)
 
-        # Slider
         slider_row = QHBoxLayout()
         slider_row.addWidget(QLabel("Points:"))
         self._res_slider = QSlider(Qt.Orientation.Horizontal)
@@ -190,7 +219,6 @@ class Visualizer:
         slider_row.addWidget(self._res_label)
         grid_layout.addLayout(slider_row)
 
-        # Spacing readout
         spacing = self._compute_spacing(initial_res)
         self._spacing_label = QLabel(
             f"Spacing: {self._format_spacing(spacing)}"
@@ -206,17 +234,20 @@ class Visualizer:
         opts_group = QGroupBox("Options")
         opts_layout = QVBoxLayout(opts_group)
 
-        # Auto-update
         self._auto_update_cb = QCheckBox("Auto-update")
         self._auto_update_cb.setChecked(self._auto_update)
         self._auto_update_cb.toggled.connect(self._on_auto_update_toggled)
         opts_layout.addWidget(self._auto_update_cb)
 
-        # Slice plane
         self._slice_cb = QCheckBox("Slice plane")
         self._slice_cb.setChecked(self._slice_enabled)
         self._slice_cb.toggled.connect(self._on_slice_toggled)
         opts_layout.addWidget(self._slice_cb)
+
+        self._sample_line_cb = QCheckBox("Sample line")
+        self._sample_line_cb.setChecked(self._sample_line_enabled)
+        self._sample_line_cb.toggled.connect(self._on_sample_line_toggled)
+        opts_layout.addWidget(self._sample_line_cb)
 
         layout.addWidget(opts_group)
 
@@ -228,6 +259,27 @@ class Visualizer:
         layout.addStretch()
 
         return panel
+
+    # ------------------------------------------------------------------
+    # 2D plot widget
+    # ------------------------------------------------------------------
+
+    def _build_plot_widget(self):
+        """Build the pyqtgraph plot for B-field along the sample path."""
+        pw = pg.PlotWidget()
+        pw.setBackground("w")
+        pw.setLabel("bottom", "Distance along path", units="m")
+        pw.setLabel("left", "B", units="T")
+        pw.addLegend(offset=(60, 10))
+        pw.showGrid(x=True, y=True, alpha=0.3)
+
+        for name, color in self._PLOT_COLORS.items():
+            pen = pg.mkPen(color=color, width=2,
+                           style=Qt.PenStyle.DashLine if name == "|B|"
+                           else Qt.PenStyle.SolidLine)
+            self._plot_curves[name] = pw.plot([], [], pen=pen, name=name)
+
+        return pw
 
     # ------------------------------------------------------------------
     # Menu bar
@@ -269,9 +321,9 @@ class Visualizer:
             "slice_enabled": self._slice_enabled,
             "slice_normal": self._slice_normal.tolist(),
             "slice_origin": self._slice_origin.tolist(),
+            "sample_line_enabled": self._sample_line_enabled,
         }
 
-        # Camera position: list of 3 tuples [position, focal_point, viewup]
         if self._plotter is not None:
             cam = self._plotter.camera_position
             settings["camera_position"] = [list(v) for v in cam]
@@ -292,18 +344,18 @@ class Visualizer:
             settings.get("slice_origin", [0.0, 0.0, 0.0])
         )
 
-        # Update Qt widgets to reflect loaded state
         self._res_slider.setValue(
             self._grid_resolution if isinstance(self._grid_resolution, int)
             else self._grid_resolution[0]
         )
         self._auto_update_cb.setChecked(self._auto_update)
 
-        # Handle slice plane: toggle the checkbox which triggers _on_slice_toggled
         slice_enabled = settings.get("slice_enabled", False)
         self._slice_cb.setChecked(slice_enabled)
 
-        # Restore camera position if available
+        sample_line_enabled = settings.get("sample_line_enabled", False)
+        self._sample_line_cb.setChecked(sample_line_enabled)
+
         cam = settings.get("camera_position")
         if cam is not None and self._plotter is not None:
             self._plotter.camera_position = cam
@@ -315,7 +367,7 @@ class Visualizer:
         if self._project_path:
             from pathlib import Path
             name = Path(self._project_path).name
-            self._window.setWindowTitle(f"Magnesys — {name}")
+            self._window.setWindowTitle(f"Magnesys \u2014 {name}")
         else:
             self._window.setWindowTitle("Magnesys")
 
@@ -330,11 +382,11 @@ class Visualizer:
         if not path:
             return
 
-        simulation, viz_settings = project.load(path)
+        simulation, viz_settings, sample_path = project.load(path)
         self._project_path = path
 
-        # Replace the simulation and rebuild the scene
         self.simulation = simulation
+        self._sample_path = sample_path
 
         plotter = self._plotter
         plotter.clear()
@@ -342,6 +394,8 @@ class Visualizer:
         self._field_actor = None
         self._plane_widget = None
         self._slice_enabled = False
+        self._line_widget = None
+        self._sample_line_enabled = False
         self._add_loops(plotter, self._loop_line_width)
         self._apply_viz_settings(viz_settings)
         self._update_field()
@@ -349,7 +403,6 @@ class Visualizer:
         plotter.add_axes()
         plotter.reset_camera()
 
-        # Restore camera after reset (if saved)
         cam = viz_settings.get("camera_position")
         if cam is not None:
             plotter.camera_position = cam
@@ -363,6 +416,7 @@ class Visualizer:
                 self._project_path,
                 self.simulation,
                 self._viz_settings_to_dict(),
+                sample_path=self._sample_path,
             )
         else:
             self._on_file_save_as()
@@ -378,12 +432,14 @@ class Visualizer:
         if not path:
             return
 
-        # Ensure .mag extension
         if not path.lower().endswith(".mag"):
             path += ".mag"
 
         self._project_path = path
-        project.save(path, self.simulation, self._viz_settings_to_dict())
+        project.save(
+            path, self.simulation, self._viz_settings_to_dict(),
+            sample_path=self._sample_path,
+        )
         self._update_window_title()
 
     # ------------------------------------------------------------------
@@ -449,8 +505,6 @@ class Visualizer:
             extents = self._grid_extents or self._auto_extents()
             bounds = list(extents)
 
-            # Only reset to defaults if no position has been set
-            # (e.g. user toggling on for the first time vs restoring from file)
             if self._plane_widget is None and np.allclose(self._slice_origin, 0.0):
                 center = [
                     (extents[0] + extents[1]) / 2,
@@ -495,6 +549,58 @@ class Visualizer:
         if self._auto_update:
             self._update_field()
 
+    def _on_sample_line_toggled(self, checked):
+        """Callback for the sample line checkbox."""
+        self._sample_line_enabled = checked
+        plotter = self._plotter
+        if plotter is None:
+            return
+
+        if self._sample_line_enabled:
+            # Default line endpoints: span the center of the bounding box
+            extents = self._grid_extents or self._auto_extents()
+            if self._sample_path is None:
+                cx = (extents[0] + extents[1]) / 2
+                cy = (extents[2] + extents[3]) / 2
+                cz = (extents[4] + extents[5]) / 2
+                span = (extents[1] - extents[0]) * 0.4
+                self._sample_path = LineSegmentPath(
+                    start=[cx - span, cy, cz],
+                    end=[cx + span, cy, cz],
+                )
+
+            self._line_widget = plotter.add_line_widget(
+                self._on_line_moved,
+                bounds=list(extents),
+                factor=1.0,
+                resolution=1,
+                color="black",
+                interaction_event="end",
+            )
+            # Set to current path endpoints
+            self._line_widget.SetPoint1(self._sample_path.start.tolist())
+            self._line_widget.SetPoint2(self._sample_path.end.tolist())
+
+            self._plot_widget.setVisible(True)
+            self._update_plot()
+        else:
+            if self._line_widget is not None:
+                self._line_widget.Off()
+                if self._line_widget in plotter.line_widgets:
+                    plotter.line_widgets.remove(self._line_widget)
+                self._line_widget = None
+            self._plot_widget.setVisible(False)
+
+    def _on_line_moved(self, polydata):
+        """Callback when the sample line widget is dragged."""
+        pts = np.array(polydata.points)
+        if len(pts) >= 2:
+            self._sample_path = LineSegmentPath(
+                start=pts[0], end=pts[-1],
+            )
+            if self._auto_update:
+                self._update_plot()
+
     # ------------------------------------------------------------------
     # Field update
     # ------------------------------------------------------------------
@@ -526,6 +632,35 @@ class Visualizer:
             )
 
         plotter.render()
+
+        # Also refresh the line plot if active
+        if self._sample_line_enabled:
+            self._update_plot()
+
+    def _update_plot(self):
+        """Recompute B along the sample path and update the 2D plot."""
+        if not self._plot_curves:
+            return
+        if self._sample_path is None or not self.simulation.loops:
+            for curve in self._plot_curves.values():
+                curve.setData([], [])
+            return
+
+        n = self.N_PATH_SAMPLES
+        points = self._sample_path.get_points(n)
+        distances = self._sample_path.get_distances(n)
+
+        x, y, z = points[:, 0], points[:, 1], points[:, 2]
+        Bx, By, Bz = self.simulation.magnetic_field_at(x, y, z)
+        Bx = np.asarray(Bx).ravel()
+        By = np.asarray(By).ravel()
+        Bz = np.asarray(Bz).ravel()
+        Bmag = np.sqrt(Bx**2 + By**2 + Bz**2)
+
+        self._plot_curves["Bx"].setData(distances, Bx)
+        self._plot_curves["By"].setData(distances, By)
+        self._plot_curves["Bz"].setData(distances, Bz)
+        self._plot_curves["|B|"].setData(distances, Bmag)
 
     # ------------------------------------------------------------------
     # Internal rendering helpers
