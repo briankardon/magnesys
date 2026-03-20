@@ -340,6 +340,8 @@ class Visualizer:
         plotter.clear()
 
         self._field_actor = None
+        self._plane_widget = None
+        self._slice_enabled = False
         self._add_loops(plotter, self._loop_line_width)
         self._apply_viz_settings(viz_settings)
         self._update_field()
@@ -446,13 +448,17 @@ class Visualizer:
         if self._slice_enabled:
             extents = self._grid_extents or self._auto_extents()
             bounds = list(extents)
-            center = [
-                (extents[0] + extents[1]) / 2,
-                (extents[2] + extents[3]) / 2,
-                (extents[4] + extents[5]) / 2,
-            ]
-            self._slice_origin = np.array(center)
-            self._slice_normal = np.array([0.0, 0.0, 1.0])
+
+            # Only reset to defaults if no position has been set
+            # (e.g. user toggling on for the first time vs restoring from file)
+            if self._plane_widget is None and np.allclose(self._slice_origin, 0.0):
+                center = [
+                    (extents[0] + extents[1]) / 2,
+                    (extents[2] + extents[3]) / 2,
+                    (extents[4] + extents[5]) / 2,
+                ]
+                self._slice_origin = np.array(center)
+                self._slice_normal = np.array([0.0, 0.0, 1.0])
 
             self._plane_widget = plotter.add_plane_widget(
                 self._on_plane_moved,
