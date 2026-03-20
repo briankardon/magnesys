@@ -899,6 +899,14 @@ class Visualizer:
                 self._line_widget.GetHandleSize() * 0.5
             )
 
+            # Style the handles and selection highlight
+            self._line_widget.GetHandleProperty().SetColor(0.2, 0.2, 0.2)
+            self._line_widget.GetSelectedHandleProperty().SetColor(1.0, 0.0, 0.0)
+            self._line_widget.GetSelectedLineProperty().SetColor(0.2, 0.2, 0.2)
+
+            # Disable bounds clamping to hide the bounding box outline
+            self._line_widget.ClampToBoundsOff()
+
             self._plot_widget.setVisible(True)
             self._update_plot()
         else:
