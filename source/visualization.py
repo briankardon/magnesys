@@ -177,52 +177,43 @@ class Visualizer:
         )
 
         # ---- Auto-update checkbox ----
-        # Position in pixels — estimate from viewport fraction
-        # Use a fixed pixel position in the right panel area
-        plotter.add_text(
-            "Auto-update",
-            position=(L + 0.01, 0.68),
-            viewport=True,
-            font_size=9,
-            color="black",
-        )
+        # Compute pixel positions from viewport fractions
+        win_w, win_h = plotter.window_size
+        cb_x = int(L * win_w) + 5
+        cb_size = 25
+
+        cb_y = int(0.66 * win_h)
         plotter.add_checkbox_button_widget(
             self._on_auto_update_toggled,
             value=self._auto_update,
-            position=(5, 5),  # will be repositioned below
-            size=25,
+            position=(cb_x, cb_y),
+            size=cb_size,
             color_on="green",
             color_off="grey",
         )
-        # Reposition the checkbox to the panel area (pixel coords)
-        # Approximate: panel left in pixels ≈ _PANEL_LEFT * window_width
-        win_w, win_h = plotter.window_size
-        cb_x = int(L * win_w) + 5
-        cb_y = int(0.64 * win_h)
-        rep = plotter.button_widgets[-1].GetRepresentation()
-        rep.SetPlaceFactor(1)
-        rep.PlaceWidget((cb_x, cb_y, 0, cb_x + 25, cb_y + 25, 0))
-
-        # ---- Refresh button ----
         plotter.add_text(
-            "Refresh",
-            position=(L + 0.01, 0.56),
-            viewport=True,
+            "Auto-update",
+            position=(cb_x + cb_size + 8, cb_y + 2),
             font_size=9,
             color="black",
         )
+
+        # ---- Refresh button ----
+        rb_y = int(0.58 * win_h)
         self._refresh_widget = plotter.add_checkbox_button_widget(
             self._on_refresh_clicked,
             value=False,
-            position=(5, 5),  # repositioned below
-            size=25,
+            position=(cb_x, rb_y),
+            size=cb_size,
             color_on="steelblue",
             color_off="steelblue",
         )
-        rb_y = int(0.52 * win_h)
-        rep = plotter.button_widgets[-1].GetRepresentation()
-        rep.SetPlaceFactor(1)
-        rep.PlaceWidget((cb_x, rb_y, 0, cb_x + 25, rb_y + 25, 0))
+        plotter.add_text(
+            "Refresh",
+            position=(cb_x + cb_size + 8, rb_y + 2),
+            font_size=9,
+            color="black",
+        )
 
     def _update_spacing_display(self):
         """Update the spacing readout text."""
