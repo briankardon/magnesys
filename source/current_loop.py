@@ -14,6 +14,8 @@ class CurrentLoop(ABC):
     """
 
     loop_type: str = ""
+    frequency: float = 0.0  # Hz; modulates current as cos(2πft + phase)
+    phase: float = 0.0      # radians
 
     @abstractmethod
     def magnetic_field(self, x, y, z):

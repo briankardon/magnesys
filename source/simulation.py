@@ -67,8 +67,8 @@ class Simulation:
         for loop in self.loops:
             bx, by, bz = loop.magnetic_field(x, y, z)
             # Time modulation: cos(2π·f·t + phase)
-            f = getattr(loop, "frequency", 0.0)
-            phi = getattr(loop, "phase", 0.0)
+            f = loop.frequency
+            phi = loop.phase
             if f != 0.0 or phi != 0.0:
                 mod = np.cos(2.0 * np.pi * f * t + phi)
                 bx = bx * mod

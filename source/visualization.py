@@ -158,6 +158,9 @@ class Visualizer:
         self._plane_widget = None
 
         # Sample paths state (multi-path)
+        # INVARIANT: _sample_paths and _path_visuals are always the same length.
+        # Mutate only via _append_path_entry / _pop_path_entry / _clear_path_entries
+        # or _set_path_entries (for bulk replacement on file open).
         self._sample_paths = []
         self._sample_paths_visible = False
         self._path_visuals = []  # parallel to _sample_paths; dicts or None
@@ -594,8 +597,8 @@ class Visualizer:
         if hasattr(loop, "corner_radius"):
             props.append(("corner_radius", "Corner radius (m)", loop.corner_radius))
         props.append(("current", "Current (A)", loop.current))
-        props.append(("frequency", "Frequency (Hz)", getattr(loop, "frequency", 0.0)))
-        props.append(("phase", "Phase (rad)", getattr(loop, "phase", 0.0)))
+        props.append(("frequency", "Frequency (Hz)", loop.frequency))
+        props.append(("phase", "Phase (rad)", loop.phase))
         return props
 
     @staticmethod
@@ -1019,7 +1022,7 @@ class Visualizer:
     def _add_path(self, path):
         """Append a path and update visuals/tree/selector."""
         was_empty = len(self._sample_paths) == 0
-        self._sample_paths.append(path)
+        self._append_path_entry(path)
 
         if self._sample_paths_visible:
             self._create_path_visual(len(self._sample_paths) - 1)
@@ -1112,7 +1115,7 @@ class Visualizer:
         """Remove all loops and paths."""
         self.simulation.loops.clear()
         self._teardown_all_path_visuals()
-        self._sample_paths.clear()
+        self._clear_path_entries()
         self._selected_path_index = 0
         self._rebuild_scene()
         self._refresh_path_selector()
@@ -1137,14 +1140,9 @@ class Visualizer:
         if path_idx >= len(self._sample_paths):
             return
 
-        # Tear down visual
-        if path_idx < len(self._path_visuals):
-            self._teardown_path_visual(path_idx)
-
-        # Remove from lists
-        self._sample_paths.pop(path_idx)
-        if path_idx < len(self._path_visuals):
-            self._path_visuals.pop(path_idx)
+        # Tear down visual then remove from both lists
+        self._teardown_path_visual(path_idx)
+        self._pop_path_entry(path_idx)
 
         # Rebuild all visuals since indices shifted (widget callbacks capture index)
         if self._sample_paths_visible:
@@ -1329,7 +1327,7 @@ class Visualizer:
         self._project_path = path
 
         self.simulation = simulation
-        self._sample_paths = sample_paths
+        self._set_path_entries(sample_paths)
 
         plotter = self._plotter
         plotter.clear()
@@ -1548,7 +1546,7 @@ class Visualizer:
     def _auto_time_range(self):
         """Compute a sensible time range from source frequencies."""
         freqs = [
-            getattr(loop, "frequency", 0.0)
+            loop.frequency
             for loop in self.simulation.loops
         ]
         freqs = [f for f in freqs if f > 0]
@@ -1560,7 +1558,7 @@ class Visualizer:
     def _update_time_range(self):
         """Update the time range label and spin box step size."""
         t_max = self._auto_time_range()
-        freqs = [getattr(loop, "frequency", 0.0) for loop in self.simulation.loops]
+        freqs = [loop.frequency for loop in self.simulation.loops]
         freqs = [f for f in freqs if f > 0]
         if freqs:
             self._time_range_label.setText(
@@ -1647,16 +1645,38 @@ class Visualizer:
             self._teardown_all_path_visuals()
             self._plot_container.setVisible(False)
 
+    # ------------------------------------------------------------------
+    # Synchronized path list mutations
+    # ------------------------------------------------------------------
+
+    def _append_path_entry(self, path):
+        """Add a path with a placeholder visual (keeps lists in sync)."""
+        self._sample_paths.append(path)
+        self._path_visuals.append(None)
+
+    def _pop_path_entry(self, idx):
+        """Remove a path and its visual by index (keeps lists in sync)."""
+        self._sample_paths.pop(idx)
+        self._path_visuals.pop(idx)
+
+    def _clear_path_entries(self):
+        """Remove all paths and visuals (keeps lists in sync)."""
+        self._sample_paths.clear()
+        self._path_visuals.clear()
+
+    def _set_path_entries(self, paths):
+        """Replace all paths (e.g. on file open), resetting visuals."""
+        self._sample_paths = list(paths)
+        self._path_visuals = [None] * len(self._sample_paths)
+
+    # ------------------------------------------------------------------
+
     def _create_path_visual(self, path_idx):
         """Create the appropriate 3D visual for the path at path_idx."""
         plotter = self._plotter
         if plotter is None:
             return
         sp = self._sample_paths[path_idx]
-
-        # Ensure list is long enough
-        while len(self._path_visuals) <= path_idx:
-            self._path_visuals.append(None)
 
         if isinstance(sp, (PolylinePath, SplinePath)):
             line_actor = self._make_polyline_line_actor(plotter, sp)
@@ -1801,10 +1821,9 @@ class Visualizer:
         self._path_visuals[path_idx] = None
 
     def _teardown_all_path_visuals(self):
-        """Remove all path visuals from the plotter."""
+        """Remove all path visuals from the plotter (sets each to None)."""
         for i in range(len(self._path_visuals)):
             self._teardown_path_visual(i)
-        self._path_visuals.clear()
 
     def _sync_path_visual(self, path_idx):
         """Push updated path data to its 3D visual."""
@@ -1980,8 +1999,8 @@ class Visualizer:
             by = np.asarray(by).ravel()
             bz = np.asarray(bz).ravel()
 
-            f = getattr(loop, "frequency", 0.0)
-            phi = getattr(loop, "phase", 0.0)
+            f = loop.frequency
+            phi = loop.phase
             if f != 0.0 or phi != 0.0:
                 mod = np.cos(2.0 * np.pi * f * t_samples + phi)
                 bx = bx * mod
