@@ -102,38 +102,51 @@ class Simulation:
     # ------------------------------------------------------------------
 
     def to_dict(self):
+        """Serialize to a dict containing just the loop data."""
         return {
-            "magnesys_version": 1,
             "loops": [loop.to_dict() for loop in self.loops],
         }
 
     @classmethod
     def from_dict(cls, data):
+        """Construct from a dict.
+
+        Accepts either:
+          - v1 format: {"magnesys_version": 1, "loops": [...]}
+          - v2 simulation block: {"loops": [...]}
+          - v2 full project: {"magnesys_version": 2, "simulation": {"loops": [...]}}
+        """
         version = data.get("magnesys_version", 1)
-        if version != 1:
+        if version == 2:
+            loop_list = data["simulation"]["loops"]
+        elif version == 1:
+            loop_list = data["loops"]
+        else:
             raise ValueError(f"Unsupported file version: {version}")
-        loops = [CurrentLoop.create_from_dict(d) for d in data["loops"]]
+        loops = [CurrentLoop.create_from_dict(d) for d in loop_list]
         return cls(loops=loops)
 
     def save(self, path):
-        """Save the simulation to a JSON file.
+        """Save the simulation to a JSON file (v1 format).
 
         Parameters
         ----------
         path : str or pathlib.Path
             Output file path.
         """
+        data = {"magnesys_version": 1}
+        data.update(self.to_dict())
         with open(path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
+            json.dump(data, f, indent=2)
 
     @classmethod
     def load(cls, path):
-        """Load a simulation from a JSON file.
+        """Load a simulation from a JSON or .mag file.
 
         Parameters
         ----------
         path : str or pathlib.Path
-            Path to a file previously written by save().
+            Path to a file previously written by save() or Visualizer.save_project().
 
         Returns
         -------

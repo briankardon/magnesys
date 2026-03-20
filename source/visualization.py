@@ -5,9 +5,11 @@ import sys
 import numpy as np
 import pyvista as pv
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -18,6 +20,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from pyvistaqt import QtInteractor
+
+from . import project
 
 
 class Visualizer:
@@ -44,7 +48,9 @@ class Visualizer:
     def __init__(self, simulation):
         self.simulation = simulation
         self._plotter = None
+        self._window = None
         self._field_actor = None
+        self._project_path = None  # path to current .mag file
 
         # State tracked for updating
         self._grid_extents = None
@@ -52,6 +58,7 @@ class Visualizer:
         self._field_scale = "auto"
         self._arrow_size_mode = "linear"
         self._auto_update = True
+        self._loop_line_width = 3.0
 
         # Slice plane state
         self._slice_enabled = False
@@ -110,6 +117,7 @@ class Visualizer:
         self._grid_resolution = grid_resolution
         self._field_scale = field_scale
         self._arrow_size_mode = arrow_size_mode
+        self._loop_line_width = loop_line_width
 
         # ---- Build the Qt application and window ----
         app = QApplication.instance()
@@ -119,6 +127,10 @@ class Visualizer:
         window = QMainWindow()
         window.setWindowTitle("Magnesys")
         window.resize(1400, 900)
+        self._window = window
+
+        # Menu bar
+        self._build_menu_bar(window)
 
         # Central widget with horizontal layout: [3D viewport | controls]
         central = QWidget()
@@ -216,6 +228,161 @@ class Visualizer:
         layout.addStretch()
 
         return panel
+
+    # ------------------------------------------------------------------
+    # Menu bar
+    # ------------------------------------------------------------------
+
+    def _build_menu_bar(self, window):
+        """Build the File menu bar."""
+        menu_bar = window.menuBar()
+        file_menu = menu_bar.addMenu("&File")
+
+        open_action = QAction("&Open...", window)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
+        open_action.triggered.connect(self._on_file_open)
+        file_menu.addAction(open_action)
+
+        file_menu.addSeparator()
+
+        save_action = QAction("&Save", window)
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self._on_file_save)
+        file_menu.addAction(save_action)
+
+        save_as_action = QAction("Save &As...", window)
+        save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_as_action.triggered.connect(self._on_file_save_as)
+        file_menu.addAction(save_as_action)
+
+    # ------------------------------------------------------------------
+    # Project save / load
+    # ------------------------------------------------------------------
+
+    def _viz_settings_to_dict(self):
+        """Collect current visualization state into a serializable dict."""
+        settings = {
+            "grid_resolution": self._grid_resolution,
+            "field_scale": self._field_scale,
+            "arrow_size_mode": self._arrow_size_mode,
+            "auto_update": self._auto_update,
+            "slice_enabled": self._slice_enabled,
+            "slice_normal": self._slice_normal.tolist(),
+            "slice_origin": self._slice_origin.tolist(),
+        }
+
+        # Camera position: list of 3 tuples [position, focal_point, viewup]
+        if self._plotter is not None:
+            cam = self._plotter.camera_position
+            settings["camera_position"] = [list(v) for v in cam]
+
+        return settings
+
+    def _apply_viz_settings(self, settings):
+        """Apply visualization settings from a dict, falling back to defaults."""
+        self._grid_resolution = settings.get("grid_resolution", 10)
+        self._field_scale = settings.get("field_scale", "auto")
+        self._arrow_size_mode = settings.get("arrow_size_mode", "linear")
+        self._auto_update = settings.get("auto_update", True)
+
+        self._slice_normal = np.array(
+            settings.get("slice_normal", [0.0, 0.0, 1.0])
+        )
+        self._slice_origin = np.array(
+            settings.get("slice_origin", [0.0, 0.0, 0.0])
+        )
+
+        # Update Qt widgets to reflect loaded state
+        self._res_slider.setValue(
+            self._grid_resolution if isinstance(self._grid_resolution, int)
+            else self._grid_resolution[0]
+        )
+        self._auto_update_cb.setChecked(self._auto_update)
+
+        # Handle slice plane: toggle the checkbox which triggers _on_slice_toggled
+        slice_enabled = settings.get("slice_enabled", False)
+        self._slice_cb.setChecked(slice_enabled)
+
+        # Restore camera position if available
+        cam = settings.get("camera_position")
+        if cam is not None and self._plotter is not None:
+            self._plotter.camera_position = cam
+
+    def _update_window_title(self):
+        """Update the window title to reflect the current file."""
+        if self._window is None:
+            return
+        if self._project_path:
+            from pathlib import Path
+            name = Path(self._project_path).name
+            self._window.setWindowTitle(f"Magnesys — {name}")
+        else:
+            self._window.setWindowTitle("Magnesys")
+
+    def _on_file_open(self):
+        """File → Open callback."""
+        path, _ = QFileDialog.getOpenFileName(
+            self._window,
+            "Open project",
+            "",
+            f"{project.MAG_FILE_FILTER};;All files (*)",
+        )
+        if not path:
+            return
+
+        simulation, viz_settings = project.load(path)
+        self._project_path = path
+
+        # Replace the simulation and rebuild the scene
+        self.simulation = simulation
+
+        plotter = self._plotter
+        plotter.clear()
+
+        self._field_actor = None
+        self._add_loops(plotter, self._loop_line_width)
+        self._apply_viz_settings(viz_settings)
+        self._update_field()
+
+        plotter.add_axes()
+        plotter.reset_camera()
+
+        # Restore camera after reset (if saved)
+        cam = viz_settings.get("camera_position")
+        if cam is not None:
+            plotter.camera_position = cam
+
+        self._update_window_title()
+
+    def _on_file_save(self):
+        """File → Save callback."""
+        if self._project_path:
+            project.save(
+                self._project_path,
+                self.simulation,
+                self._viz_settings_to_dict(),
+            )
+        else:
+            self._on_file_save_as()
+
+    def _on_file_save_as(self):
+        """File → Save As callback."""
+        path, _ = QFileDialog.getSaveFileName(
+            self._window,
+            "Save project",
+            "",
+            f"{project.MAG_FILE_FILTER};;All files (*)",
+        )
+        if not path:
+            return
+
+        # Ensure .mag extension
+        if not path.lower().endswith(".mag"):
+            path += ".mag"
+
+        self._project_path = path
+        project.save(path, self.simulation, self._viz_settings_to_dict())
+        self._update_window_title()
 
     # ------------------------------------------------------------------
     # Spacing helpers

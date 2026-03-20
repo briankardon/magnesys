@@ -4,6 +4,7 @@ from .circular_current_loop import CircularCurrentLoop
 from .round_rect_current_loop import RoundRectCurrentLoop
 from .simulation import Simulation
 from .visualization import Visualizer
+from . import project
 
 __all__ = [
     "CurrentLoop",
@@ -12,4 +13,5 @@ __all__ = [
     "RoundRectCurrentLoop",
     "Simulation",
     "Visualizer",
+    "project",
 ]
