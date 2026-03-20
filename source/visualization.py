@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QSlider,
     QSplitter,
     QTreeView,
@@ -350,6 +351,24 @@ class Visualizer:
         opts_layout.addWidget(self._sample_line_cb)
 
         layout.addWidget(opts_group)
+
+        # ---- Arrow scaling ----
+        arrow_group = QGroupBox("Arrow scaling")
+        arrow_layout = QVBoxLayout(arrow_group)
+
+        self._arrow_radios = {}
+        for mode, label in [
+            ("uniform", "Uniform (color only)"),
+            ("log", "Logarithmic"),
+            ("linear", "Linear"),
+        ]:
+            rb = QRadioButton(label)
+            rb.setChecked(mode == self._arrow_size_mode)
+            rb.toggled.connect(lambda checked, m=mode: self._on_arrow_mode_changed(m, checked))
+            arrow_layout.addWidget(rb)
+            self._arrow_radios[mode] = rb
+
+        layout.addWidget(arrow_group)
 
         # ---- Update button ----
         self._update_btn = QPushButton("Update")
@@ -710,6 +729,10 @@ class Visualizer:
         )
         self._auto_update_cb.setChecked(self._auto_update)
 
+        # Restore arrow mode radio button
+        if self._arrow_size_mode in self._arrow_radios:
+            self._arrow_radios[self._arrow_size_mode].setChecked(True)
+
         slice_enabled = settings.get("slice_enabled", False)
         self._slice_cb.setChecked(slice_enabled)
 
@@ -903,6 +926,14 @@ class Visualizer:
     def _on_auto_update_toggled(self, checked):
         """Callback for the auto-update checkbox."""
         self._auto_update = checked
+        if self._auto_update:
+            self._update_field()
+
+    def _on_arrow_mode_changed(self, mode, checked):
+        """Callback for arrow scaling radio buttons."""
+        if not checked:
+            return
+        self._arrow_size_mode = mode
         if self._auto_update:
             self._update_field()
 
@@ -1341,7 +1372,7 @@ class Visualizer:
 
             if resolved_scale == "auto":
                 median_mag = np.median(magnitudes[magnitudes > 0]) if np.any(magnitudes > 0) else 1.0
-                resolved_scale = 0.5 * cell_size / median_mag
+                resolved_scale = 0.15 * cell_size / median_mag
 
             arrows = grid.glyph(
                 orient="B", scale="scale", factor=resolved_scale,
