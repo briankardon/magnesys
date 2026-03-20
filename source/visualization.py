@@ -10,12 +10,17 @@ from PyQt6.QtGui import QAction, QColor, QKeySequence, QStandardItem, QStandardI
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSlider,
     QSplitter,
@@ -27,6 +32,68 @@ from pyvistaqt import QtInteractor
 
 from . import project
 from .path import LineSegmentPath
+
+
+class ExportFieldAlongPathDialog(QDialog):
+    """Dialog for configuring field-along-path CSV export."""
+
+    def __init__(self, path_length, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Export field along path")
+        self._path_length = path_length
+
+        layout = QVBoxLayout(self)
+
+        # Sampling interval
+        form = QFormLayout()
+
+        self._interval_spin = QDoubleSpinBox()
+        self._interval_spin.setDecimals(4)
+        self._interval_spin.setSuffix(" m")
+        self._interval_spin.setRange(1e-6, path_length)
+        # Default: ~200 points
+        default_interval = path_length / 200 if path_length > 0 else 0.001
+        self._interval_spin.setValue(default_interval)
+        self._interval_spin.setSingleStep(default_interval * 0.1)
+        form.addRow("Sampling interval:", self._interval_spin)
+
+        # Point count readout
+        self._count_label = QLabel()
+        form.addRow("Points:", self._count_label)
+
+        # Path length readout
+        form.addRow("Path length:", QLabel(f"{path_length:.6g} m"))
+
+        layout.addLayout(form)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        self._export_btn = buttons.addButton(
+            "Export...", QDialogButtonBox.ButtonRole.AcceptRole,
+        )
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        # AcceptRole doesn't auto-connect to accept(), wire it manually
+        self._export_btn.clicked.connect(self.accept)
+        layout.addWidget(buttons)
+
+        # Update count on interval change
+        self._interval_spin.valueChanged.connect(self._update_count)
+        self._update_count()
+
+    def _update_count(self):
+        n = self.point_count()
+        self._count_label.setText(str(n))
+
+    def interval(self):
+        return self._interval_spin.value()
+
+    def point_count(self):
+        if self._path_length <= 0:
+            return 0
+        return max(int(self._path_length / self._interval_spin.value()) + 1, 2)
 
 
 class Visualizer:
@@ -491,6 +558,13 @@ class Visualizer:
         save_as_action.triggered.connect(self._on_file_save_as)
         file_menu.addAction(save_as_action)
 
+        # ---- Export menu ----
+        export_menu = menu_bar.addMenu("&Export")
+
+        export_path_action = QAction("Export field along &path...", window)
+        export_path_action.triggered.connect(self._on_export_field_along_path)
+        export_menu.addAction(export_path_action)
+
     # ------------------------------------------------------------------
     # Project save / load
     # ------------------------------------------------------------------
@@ -627,6 +701,60 @@ class Visualizer:
             sample_path=self._sample_path,
         )
         self._update_window_title()
+
+    def _on_export_field_along_path(self):
+        """Export → Export field along path callback."""
+        if self._sample_path is None:
+            QMessageBox.information(
+                self._window,
+                "No sample path",
+                "Enable the sample line first (Options → Sample line).",
+            )
+            return
+
+        path_length = self._sample_path.length
+
+        dlg = ExportFieldAlongPathDialog(path_length, parent=self._window)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        n_points = dlg.point_count()
+
+        # Ask for output file
+        csv_path, _ = QFileDialog.getSaveFileName(
+            self._window,
+            "Export CSV",
+            "",
+            "CSV files (*.csv);;All files (*)",
+        )
+        if not csv_path:
+            return
+        if not csv_path.lower().endswith(".csv"):
+            csv_path += ".csv"
+
+        # Compute field
+        points = self._sample_path.get_points(n_points)
+        x, y, z = points[:, 0], points[:, 1], points[:, 2]
+        Bx, By, Bz = self.simulation.magnetic_field_at(x, y, z)
+        Bx = np.asarray(Bx).ravel()
+        By = np.asarray(By).ravel()
+        Bz = np.asarray(Bz).ravel()
+        Bmag = np.sqrt(Bx**2 + By**2 + Bz**2)
+
+        # Write CSV
+        with open(csv_path, "w") as f:
+            f.write(
+                f"# Magnesys v{project.CURRENT_VERSION} — "
+                f"field along path, {n_points} points, "
+                f"interval {dlg.interval():.6g} m, "
+                f"path length {path_length:.6g} m\n"
+            )
+            f.write("x,y,z,Bx,By,Bz,Bmag\n")
+            for i in range(n_points):
+                f.write(
+                    f"{x[i]:.8e},{y[i]:.8e},{z[i]:.8e},"
+                    f"{Bx[i]:.8e},{By[i]:.8e},{Bz[i]:.8e},{Bmag[i]:.8e}\n"
+                )
 
     # ------------------------------------------------------------------
     # Spacing helpers
