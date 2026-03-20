@@ -5,6 +5,10 @@ Demonstrates: opposing current directions, log arrow mode to reveal
 the weak-field region at center alongside the stronger field near coils.
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from source import CircularCurrentLoop, Simulation, Visualizer
 
 R = 0.05

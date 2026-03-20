@@ -4,6 +4,10 @@ uniform field in the region between them.
 Demonstrates: CircularCurrentLoop, uniform arrow mode.
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from source import CircularCurrentLoop, Simulation, Visualizer
 
 R = 0.05  # radius = 5 cm

@@ -5,6 +5,10 @@ Demonstrates: combining CircularCurrentLoop and RoundRectCurrentLoop
 in a single simulation.
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from source import (
     CircularCurrentLoop, RoundRectCurrentLoop, Simulation, Visualizer,
 )

@@ -4,6 +4,10 @@ field direction at the center (as in a 3-axis coil system).
 Demonstrates: arbitrary loop orientations in 3D, linear arrow mode.
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from source import CircularCurrentLoop, Simulation, Visualizer
 
 D = 0.12  # 12 cm diameter
