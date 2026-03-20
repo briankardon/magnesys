@@ -15,22 +15,22 @@ A Python-based magnetic field simulator with an interactive 3D visualization GUI
 - **Interactive 3D viewer** powered by PyVista + Qt, with pan/rotate/zoom
 - **Quiver plot** of the magnetic field with three arrow scaling modes (uniform, logarithmic, linear), selectable via radio buttons
 - **Draggable slice plane** — compute and display the field on an arbitrary 2D cross-section
-- **Sample line with 2D plot** — drag a line through the field and see Bx, By, Bz, and |B| plotted vs distance (pyqtgraph)
+- **Sample paths with 2D plot** — three path types (line segment, polyline, spline) with draggable 3D handles; Bx, By, Bz, and |B| plotted vs distance (pyqtgraph), with a dropdown to select which path is displayed
 - **Current direction indicators** — arrowheads on each loop showing the direction of current flow
 - **Near-wire filtering** — points too close to the wire (where the thin-wire model diverges) are automatically excluded from visualization and color scaling
 
 ### GUI controls
-- **Loops tree view** — expandable list of all loops with editable properties (double-click to edit). Vectors expand into individual x/y/z components. Changes update the 3D view in real time.
-- **Add/delete loops** — Edit menu to add new circular or rounded-rectangle loops with defaults. Delete via Edit menu, right-click context menu, or Delete key.
+- **Objects tree view** — unified list of loops and sample paths with editable properties (double-click to edit). Vectors expand into individual x/y/z components. Changes update the 3D view in real time.
+- **Add/delete objects** — Edit menu to add loops (circular, rounded rectangle) and paths (line segment, polyline, spline). Delete via Edit menu, right-click context menu, or Delete key. Polyline/spline points can be added, deleted, or randomized via right-click.
 - **Grid resolution slider** with live spacing readout in cm/mm
 - **Auto-update toggle** — disable for expensive simulations, use the Update button manually
 - **Arrow scaling radio buttons** — switch between uniform, logarithmic (default), and linear
 
 ### Project files
-- **`.mag` file format** — human-readable JSON storing simulation, visualization settings, camera position, slice plane state, and sample path
+- **`.mag` file format** (v3) — human-readable JSON storing simulation, visualization settings, camera position, slice plane state, and multiple sample paths
 - **File menu** — Open (Ctrl+O), Save (Ctrl+S), Save As (Ctrl+Shift+S)
 - **Export menu** — Export field along path to CSV with configurable sampling interval
-- Backward-compatible with v1 simulation-only JSON files
+- Backward-compatible with v1 (simulation-only) and v2 (single sample path) files
 
 ## Supported Geometries
 
@@ -63,12 +63,14 @@ python magnesys.py demos/helmholtz_coil.mag
 
 In the GUI you can:
 - **Add loops** via Edit → Add loop → Circular / Rounded rectangle
-- **Edit loop properties** by double-clicking values in the tree view
-- **Delete loops** by selecting one and pressing Delete (or right-click → Delete loop)
+- **Add sample paths** via Edit → Add path → Line segment / Polyline / Spline
+- **Edit properties** by double-clicking values in the Objects tree view
+- **Delete objects** by selecting one and pressing Delete (or right-click → Delete)
+- **Edit polyline/spline points** — right-click a point for Add before/after, Delete, or Randomize
 - **Adjust the field grid** with the resolution slider
 - **Enable a slice plane** to see the field on a 2D cross-section (draggable)
-- **Enable a sample line** to plot Bx, By, Bz, |B| vs distance in a 2D graph (draggable endpoints)
-- **Export field data** along the sample line to CSV via Export → Export field along path
+- **Show sample paths** to plot Bx, By, Bz, |B| vs distance; select path via dropdown
+- **Export field data** along the selected path to CSV via Export → Export field along path
 - **Save/open projects** as `.mag` files preserving all settings and camera position
 
 ### Python API
@@ -162,7 +164,7 @@ source/
     circular_current_loop.py     # Exact field via elliptic integrals
     path_based_loop.py           # Biot-Savart base for arbitrary paths
     round_rect_current_loop.py
-    path.py                      # SamplePath / LineSegmentPath
+    path.py                      # SamplePath / LineSegmentPath / PolylinePath / SplinePath
     simulation.py                # Loop collection + field computation
     visualization.py             # Qt GUI + PyVista 3D + pyqtgraph 2D
     project.py                   # .mag file I/O
