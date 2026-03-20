@@ -134,10 +134,21 @@ class Visualizer:
 
         Bx, By, Bz = self.simulation.magnetic_field_on_grid(X, Y, Z)
 
-        # Build a structured grid for the glyphs
-        grid = pv.StructuredGrid(X, Y, Z)
+        # Filter out points too close to any wire (unphysical values)
+        near_wire = self.simulation.near_wire_mask(X, Y, Z).ravel()
+        valid = ~near_wire
+
+        points = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()])
         vectors = np.column_stack([Bx.ravel(), By.ravel(), Bz.ravel()])
+
+        points = points[valid]
+        vectors = vectors[valid]
         magnitudes = np.linalg.norm(vectors, axis=1)
+
+        if len(points) == 0:
+            return
+
+        grid = pv.PolyData(points)
 
         # Color always shows the true magnitude
         grid["magnitude"] = magnitudes
@@ -152,7 +163,6 @@ class Visualizer:
 
         if arrow_size_mode == "uniform":
             # All arrows same size — direction only, magnitude shown by color
-            # Normalize vectors to unit length
             safe_mag = np.where(magnitudes > 0, magnitudes, 1.0)
             unit_vectors = vectors / safe_mag[:, np.newaxis]
             grid["B"] = unit_vectors
@@ -167,8 +177,6 @@ class Visualizer:
 
         elif arrow_size_mode == "log":
             # Arrow length proportional to log(|B|), compressing dynamic range
-            # Use log10(|B| / B_min) + 1 so the smallest nonzero arrow has
-            # length 1 unit and larger ones are compressed
             nonzero = magnitudes > 0
             if np.any(nonzero):
                 min_mag = magnitudes[nonzero].min()
@@ -180,7 +188,6 @@ class Visualizer:
             else:
                 log_scale = np.zeros_like(magnitudes)
 
-            # Normalize vectors to unit length, then scale by log_scale
             safe_mag = np.where(magnitudes > 0, magnitudes, 1.0)
             unit_vectors = vectors / safe_mag[:, np.newaxis]
             grid["B"] = unit_vectors

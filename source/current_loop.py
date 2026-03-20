@@ -32,6 +32,27 @@ class CurrentLoop(ABC):
             shape of the inputs.
         """
 
+    # Relative distance threshold: points closer than this fraction of the
+    # characteristic size are considered "too close to the wire" for the
+    # thin-wire model to be physical.  Used by both the field warning and
+    # the visualizer to filter unreliable points.
+    NEAR_WIRE_THRESHOLD = 1e-6
+
+    @abstractmethod
+    def distance_to_wire(self, x, y, z):
+        """Minimum distance from point(s) to the nearest point on the wire.
+
+        Parameters
+        ----------
+        x, y, z : float or array_like
+            Coordinates in meters (broadcastable).
+
+        Returns
+        -------
+        dist : ndarray
+            Distance in meters, same shape as broadcast input.
+        """
+
     @abstractmethod
     def get_path(self, n_points=128):
         """Return points tracing the loop path for visualization.

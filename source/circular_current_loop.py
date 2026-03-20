@@ -50,6 +50,39 @@ class CircularCurrentLoop(CurrentLoop):
         return self.diameter / 2.0
 
     # ------------------------------------------------------------------
+    # Geometry helpers
+    # ------------------------------------------------------------------
+
+    def _to_local_cylindrical(self, x, y, z):
+        """Transform lab-frame points to local (rho, z) cylindrical coords."""
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        z = np.asarray(z, dtype=float)
+
+        shape = np.broadcast_shapes(x.shape, y.shape, z.shape)
+        x = np.broadcast_to(x, shape).copy()
+        y = np.broadcast_to(y, shape).copy()
+        z = np.broadcast_to(z, shape).copy()
+
+        x -= self.center[0]
+        y -= self.center[1]
+        z -= self.center[2]
+
+        R = self._rotation_to_loop_frame()
+        pts = np.stack([x, y, z], axis=-1)
+        pts_local = pts @ R
+
+        xL = pts_local[..., 0]
+        yL = pts_local[..., 1]
+        zL = pts_local[..., 2]
+        rho = np.sqrt(xL**2 + yL**2)
+        return rho, zL, xL, yL
+
+    def distance_to_wire(self, x, y, z):
+        rho, zL, _, _ = self._to_local_cylindrical(x, y, z)
+        return np.sqrt((rho - self.radius) ** 2 + zL**2)
+
+    # ------------------------------------------------------------------
     # Magnetic field
     # ------------------------------------------------------------------
 
@@ -60,63 +93,36 @@ class CircularCurrentLoop(CurrentLoop):
         The field is computed in the loop's local frame (axis along z),
         then rotated back to the lab frame.
         """
-        x = np.asarray(x, dtype=float)
-        y = np.asarray(y, dtype=float)
-        z = np.asarray(z, dtype=float)
-
-        # Broadcast to common shape
-        shape = np.broadcast_shapes(x.shape, y.shape, z.shape)
-        x = np.broadcast_to(x, shape).copy()
-        y = np.broadcast_to(y, shape).copy()
-        z = np.broadcast_to(z, shape).copy()
-
-        # Translate so the loop center is at the origin
-        x -= self.center[0]
-        y -= self.center[1]
-        z -= self.center[2]
-
-        # Build rotation matrix: lab frame -> loop frame (loop axis = z')
-        R = self._rotation_to_loop_frame()
-
-        # Transform positions into the loop's local frame
-        # Stack into (..., 3) then matrix-multiply
-        pts = np.stack([x, y, z], axis=-1)  # shape (..., 3)
-        pts_local = pts @ R  # R rotates loop->lab, so R.T=R^-1 rotates lab->loop; (pts @ R)[i] = sum_j pts[j]*R[j,i] = (R^T @ pts)[i]
-
-        xL = pts_local[..., 0]
-        yL = pts_local[..., 1]
-        zL = pts_local[..., 2]
+        rho, zL, xL, yL = self._to_local_cylindrical(x, y, z)
 
         # Compute field in the loop's local frame (axial symmetry)
-        Brho_local, Bz_local = self._field_axisymmetric(xL, yL, zL)
+        Brho_local, Bz_local = self._field_axisymmetric(rho, zL)
 
         # Convert local cylindrical (Brho, Bz) back to local Cartesian
-        rho_local = np.sqrt(xL**2 + yL**2)
         # Avoid division by zero on axis
-        safe_rho = np.where(rho_local > 0, rho_local, 1.0)
-        cos_phi = np.where(rho_local > 0, xL / safe_rho, 0.0)
-        sin_phi = np.where(rho_local > 0, yL / safe_rho, 0.0)
+        safe_rho = np.where(rho > 0, rho, 1.0)
+        cos_phi = np.where(rho > 0, xL / safe_rho, 0.0)
+        sin_phi = np.where(rho > 0, yL / safe_rho, 0.0)
 
         BxL = Brho_local * cos_phi
         ByL = Brho_local * sin_phi
         BzL = Bz_local
 
         # Rotate field back to lab frame
+        R = self._rotation_to_loop_frame()
         B_local = np.stack([BxL, ByL, BzL], axis=-1)
         B_lab = B_local @ R.T  # (B @ R.T)[i] = sum_j B[j]*R.T[j,i] = sum_j B[j]*R[i,j] = (R @ B)[i]
 
         return B_lab[..., 0], B_lab[..., 1], B_lab[..., 2]
 
-    def _field_axisymmetric(self, xL, yL, zL):
-        """Exact B-field of a z-axis-aligned loop at local coordinates.
+    def _field_axisymmetric(self, rho, z):
+        """Exact B-field of a z-axis-aligned loop in cylindrical coordinates.
 
         Returns (B_rho, B_z) in the loop's cylindrical frame.
         Uses the formulation with complete elliptic integrals K and E.
         """
         a = self.radius
         I = self.current
-        rho = np.sqrt(xL**2 + yL**2)
-        z = zL
 
         # Auxiliary quantities
         alpha_sq = a**2 + rho**2 + z**2 - 2 * a * rho
@@ -126,7 +132,7 @@ class CircularCurrentLoop(CurrentLoop):
         # nearest point on the wire loop.  Warn if any points are so close
         # that the thin-wire model is unphysical and numerics degrade.
         min_dist_sq = np.min(alpha_sq)
-        if min_dist_sq < (a * 1e-6) ** 2:
+        if min_dist_sq < (a * self.NEAR_WIRE_THRESHOLD) ** 2:
             dist = np.sqrt(max(min_dist_sq, 0.0))
             warnings.warn(
                 f"One or more field points are within {dist:.2e} m of the "

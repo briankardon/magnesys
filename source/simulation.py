@@ -66,6 +66,22 @@ class Simulation:
 
         return Bx, By, Bz
 
+    def near_wire_mask(self, x, y, z):
+        """Boolean mask that is True for points too close to any wire.
+
+        Uses each loop's NEAR_WIRE_THRESHOLD to determine proximity.
+        """
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        z = np.asarray(z, dtype=float)
+        shape = np.broadcast_shapes(x.shape, y.shape, z.shape)
+        mask = np.zeros(shape, dtype=bool)
+        for loop in self.loops:
+            dist = loop.distance_to_wire(x, y, z)
+            threshold = getattr(loop, 'radius', loop.diameter / 2) * loop.NEAR_WIRE_THRESHOLD
+            mask |= dist < threshold
+        return mask
+
     def magnetic_field_on_grid(self, X, Y, Z):
         """Compute the total magnetic field on a meshgrid.
 
