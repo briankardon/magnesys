@@ -27,12 +27,14 @@ class InfiniteLineCurrent(CurrentLoop):
 
     loop_type = "infinite_line"
 
-    def __init__(self, center, normal, current=1.0):
+    def __init__(self, center, normal, current=1.0, frequency=0.0, phase=0.0):
         self.center = np.asarray(center, dtype=float)
         n = np.asarray(normal, dtype=float)
         norm = np.linalg.norm(n)
         self.normal = n / norm if norm > 0 else np.array([0.0, 0.0, 1.0])
         self.current = float(current)
+        self.frequency = float(frequency)
+        self.phase = float(phase)
 
     def characteristic_size(self):
         # No intrinsic size — return 1 mm as a reference scale for near-wire
@@ -115,6 +117,8 @@ class InfiniteLineCurrent(CurrentLoop):
             "center": self.center.tolist(),
             "normal": self.normal.tolist(),
             "current": self.current,
+            "frequency": self.frequency,
+            "phase": self.phase,
         }
 
     @classmethod
@@ -123,4 +127,6 @@ class InfiniteLineCurrent(CurrentLoop):
             center=data["center"],
             normal=data["normal"],
             current=data["current"],
+            frequency=data.get("frequency", 0.0),
+            phase=data.get("phase", 0.0),
         )

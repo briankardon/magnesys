@@ -33,13 +33,15 @@ class RoundRectCurrentLoop(PathBasedLoop):
     loop_type = "round_rect"
 
     def __init__(self, side_lengths, corner_radius, center, normal,
-                 orientation, current):
+                 orientation, current, frequency=0.0, phase=0.0):
         a, b = side_lengths
         self.side_lengths = (float(a), float(b))
         self.corner_radius = float(corner_radius)
         self.center = np.asarray(center, dtype=float)
         self.normal = np.asarray(normal, dtype=float)
         self.current = float(current)
+        self.frequency = float(frequency)
+        self.phase = float(phase)
         orientation = np.asarray(orientation, dtype=float)
 
         # Validate shapes
@@ -218,6 +220,8 @@ class RoundRectCurrentLoop(PathBasedLoop):
             "normal": self.normal.tolist(),
             "orientation": self.orientation.tolist(),
             "current": self.current,
+            "frequency": self.frequency,
+            "phase": self.phase,
         }
 
     @classmethod
@@ -229,6 +233,8 @@ class RoundRectCurrentLoop(PathBasedLoop):
             normal=data["normal"],
             orientation=data["orientation"],
             current=data["current"],
+            frequency=data.get("frequency", 0.0),
+            phase=data.get("phase", 0.0),
         )
 
     def __repr__(self):

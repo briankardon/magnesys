@@ -144,6 +144,7 @@ class Visualizer:
         self._arrow_size_mode = "log"
         self._auto_update = True
         self._loop_line_width = 3.0
+        self._time = 0.0  # current time in seconds
 
         # Slice plane state
         self._slice_enabled = False
@@ -333,6 +334,34 @@ class Visualizer:
         self._res_slider.valueChanged.connect(self._on_resolution_changed)
 
         layout.addWidget(grid_group)
+
+        # ---- Time ----
+        time_group = QGroupBox("Time")
+        time_layout = QVBoxLayout(time_group)
+
+        time_row = QHBoxLayout()
+        time_row.addWidget(QLabel("t (s):"))
+        self._time_spin = QDoubleSpinBox()
+        self._time_spin.setDecimals(6)
+        self._time_spin.setRange(-1e6, 1e6)
+        self._time_spin.setValue(self._time)
+        self._time_spin.setSingleStep(0.001)
+        self._time_spin.valueChanged.connect(self._on_time_changed)
+        time_row.addWidget(self._time_spin)
+        time_layout.addLayout(time_row)
+
+        self._time_slider = QSlider(Qt.Orientation.Horizontal)
+        self._time_slider.setRange(0, 1000)
+        self._time_slider.setValue(0)
+        self._time_slider.valueChanged.connect(self._on_time_slider_moved)
+        time_layout.addWidget(self._time_slider)
+
+        self._time_range_label = QLabel("")
+        self._time_range_label.setStyleSheet("color: grey; font-size: 11px;")
+        time_layout.addWidget(self._time_range_label)
+        self._update_time_range()
+
+        layout.addWidget(time_group)
 
         # ---- Options ----
         opts_group = QGroupBox("Options")
@@ -553,6 +582,8 @@ class Visualizer:
         if hasattr(loop, "corner_radius"):
             props.append(("corner_radius", "Corner radius (m)", loop.corner_radius))
         props.append(("current", "Current (A)", loop.current))
+        props.append(("frequency", "Frequency (Hz)", getattr(loop, "frequency", 0.0)))
+        props.append(("phase", "Phase (rad)", getattr(loop, "phase", 0.0)))
         return props
 
     @staticmethod
@@ -1133,6 +1164,7 @@ class Visualizer:
             "slice_origin": self._slice_origin.tolist(),
             "sample_paths_visible": self._sample_paths_visible,
             "selected_path_index": self._selected_path_index,
+            "time": self._time,
         }
 
         if self._plotter is not None:
@@ -1177,6 +1209,11 @@ class Visualizer:
             settings.get("sample_line_enabled", False),
         )
         self._sample_paths_cb.setChecked(paths_visible)
+
+        # Restore time
+        self._time = settings.get("time", 0.0)
+        self._time_spin.setValue(self._time)
+        self._update_time_range()
 
         cam = settings.get("camera_position")
         if cam is not None and self._plotter is not None:
@@ -1384,6 +1421,55 @@ class Visualizer:
     def _on_update_clicked(self):
         """Callback for the manual update button."""
         self._update_field()
+
+    def _on_time_changed(self, value):
+        """Callback for the time spin box."""
+        self._time = value
+        # Sync slider position (0–1000 maps to the auto time range)
+        t_max = self._auto_time_range()
+        if t_max > 0:
+            pos = int(1000 * value / t_max)
+            self._time_slider.blockSignals(True)
+            self._time_slider.setValue(max(0, min(1000, pos)))
+            self._time_slider.blockSignals(False)
+        if self._auto_update:
+            self._update_field()
+
+    def _on_time_slider_moved(self, pos):
+        """Callback for the time slider (0–1000 maps to one full period)."""
+        t_max = self._auto_time_range()
+        self._time = t_max * pos / 1000.0
+        self._time_spin.blockSignals(True)
+        self._time_spin.setValue(self._time)
+        self._time_spin.blockSignals(False)
+        if self._auto_update:
+            self._update_field()
+
+    def _auto_time_range(self):
+        """Compute a sensible time range from source frequencies."""
+        freqs = [
+            getattr(loop, "frequency", 0.0)
+            for loop in self.simulation.loops
+        ]
+        freqs = [f for f in freqs if f > 0]
+        if not freqs:
+            return 1.0  # default 1 second range for DC-only
+        min_freq = min(freqs)
+        return 1.0 / min_freq  # one full period of the slowest frequency
+
+    def _update_time_range(self):
+        """Update the time range label and spin box step size."""
+        t_max = self._auto_time_range()
+        freqs = [getattr(loop, "frequency", 0.0) for loop in self.simulation.loops]
+        freqs = [f for f in freqs if f > 0]
+        if freqs:
+            self._time_range_label.setText(
+                f"Range: 0 \u2013 {t_max:.6g} s (1/{min(freqs):.4g} Hz)"
+            )
+            self._time_spin.setSingleStep(t_max / 100)
+        else:
+            self._time_range_label.setText("No AC sources")
+            self._time_spin.setSingleStep(0.001)
 
     def _on_slice_toggled(self, checked):
         """Callback for the slice plane checkbox."""
@@ -1676,6 +1762,7 @@ class Visualizer:
 
         # Refresh the tree to show updated values (e.g. re-normalized normals)
         self._refresh_tree()
+        self._update_time_range()
 
     def _update_field(self):
         """Recompute and redraw the magnetic field arrows."""
@@ -1731,7 +1818,7 @@ class Visualizer:
         distances = sp.get_distances(n)
 
         x, y, z = points[:, 0], points[:, 1], points[:, 2]
-        Bx, By, Bz = self.simulation.magnetic_field_at(x, y, z)
+        Bx, By, Bz = self.simulation.magnetic_field_at(x, y, z, t=self._time)
         Bx = np.asarray(Bx).ravel()
         By = np.asarray(By).ravel()
         Bz = np.asarray(Bz).ravel()
@@ -1883,7 +1970,7 @@ class Visualizer:
         )
 
         x, y, z = points[:, 0], points[:, 1], points[:, 2]
-        Bx, By, Bz = self.simulation.magnetic_field_at(x, y, z)
+        Bx, By, Bz = self.simulation.magnetic_field_at(x, y, z, t=self._time)
 
         near_wire = self.simulation.near_wire_mask(x, y, z)
         valid = ~near_wire
@@ -1921,7 +2008,7 @@ class Visualizer:
         zs = np.linspace(z_min, z_max, nz)
         X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
 
-        Bx, By, Bz = self.simulation.magnetic_field_on_grid(X, Y, Z)
+        Bx, By, Bz = self.simulation.magnetic_field_on_grid(X, Y, Z, t=self._time)
 
         near_wire = self.simulation.near_wire_mask(X, Y, Z).ravel()
         valid = ~near_wire

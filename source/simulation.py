@@ -35,14 +35,20 @@ class Simulation:
     # Field computation
     # ------------------------------------------------------------------
 
-    def magnetic_field_at(self, x, y, z):
-        """Compute the total magnetic field at point(s) (x, y, z).
+    def magnetic_field_at(self, x, y, z, t=0.0):
+        """Compute the total magnetic field at point(s) (x, y, z) at time t.
+
+        Each current source is modulated by cos(2π·f·t + φ) where f and φ
+        are its frequency and phase.  Sources with f=0 contribute their
+        static (DC) field at all times.
 
         Parameters
         ----------
         x, y, z : float or array_like
             Position coordinates in meters. Scalars or arrays (must be
             broadcastable to the same shape).
+        t : float
+            Time in seconds (default 0).
 
         Returns
         -------
@@ -60,6 +66,14 @@ class Simulation:
 
         for loop in self.loops:
             bx, by, bz = loop.magnetic_field(x, y, z)
+            # Time modulation: cos(2π·f·t + phase)
+            f = getattr(loop, "frequency", 0.0)
+            phi = getattr(loop, "phase", 0.0)
+            if f != 0.0 or phi != 0.0:
+                mod = np.cos(2.0 * np.pi * f * t + phi)
+                bx = bx * mod
+                by = by * mod
+                bz = bz * mod
             Bx += bx
             By += by
             Bz += bz
@@ -82,20 +96,22 @@ class Simulation:
             mask |= dist < threshold
         return mask
 
-    def magnetic_field_on_grid(self, X, Y, Z):
+    def magnetic_field_on_grid(self, X, Y, Z, t=0.0):
         """Compute the total magnetic field on a meshgrid.
 
         Parameters
         ----------
         X, Y, Z : ndarray
             Coordinate arrays as returned by numpy.meshgrid.
+        t : float
+            Time in seconds (default 0).
 
         Returns
         -------
         Bx, By, Bz : ndarray
             Field components, same shape as the input arrays.
         """
-        return self.magnetic_field_at(X, Y, Z)
+        return self.magnetic_field_at(X, Y, Z, t=t)
 
     # ------------------------------------------------------------------
     # Serialization

@@ -28,11 +28,13 @@ class CircularCurrentLoop(CurrentLoop):
 
     loop_type = "circular"
 
-    def __init__(self, diameter, center, normal, current):
+    def __init__(self, diameter, center, normal, current, frequency=0.0, phase=0.0):
         self.diameter = float(diameter)
         self.center = np.asarray(center, dtype=float)
         self.normal = np.asarray(normal, dtype=float)
         self.current = float(current)
+        self.frequency = float(frequency)
+        self.phase = float(phase)
 
         if self.center.shape != (3,):
             raise ValueError("center must have shape (3,)")
@@ -235,6 +237,8 @@ class CircularCurrentLoop(CurrentLoop):
             "center": self.center.tolist(),
             "normal": self.normal.tolist(),
             "current": self.current,
+            "frequency": self.frequency,
+            "phase": self.phase,
         }
 
     @classmethod
@@ -244,6 +248,8 @@ class CircularCurrentLoop(CurrentLoop):
             center=data["center"],
             normal=data["normal"],
             current=data["current"],
+            frequency=data.get("frequency", 0.0),
+            phase=data.get("phase", 0.0),
         )
 
     def __repr__(self):
