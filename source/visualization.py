@@ -289,12 +289,27 @@ class Visualizer:
     def _refresh_loops_tree(self):
         """Rebuild the loops tree view from the current simulation."""
         model = self._loops_model
+        tree = self._loops_tree
 
         # Disconnect while rebuilding to avoid spurious change signals
         try:
             model.itemChanged.disconnect(self._on_loop_property_changed)
         except TypeError:
             pass
+
+        # Save expanded state: set of (loop_index,) or (loop_index, prop_name)
+        expanded = set()
+        for row in range(model.rowCount()):
+            root_idx = model.index(row, 0)
+            if tree.isExpanded(root_idx):
+                expanded.add((row,))
+                # Check child rows (vector properties)
+                root_item = model.itemFromIndex(root_idx)
+                for child_row in range(root_item.rowCount()):
+                    child_idx = model.index(child_row, 0, root_idx)
+                    if tree.isExpanded(child_idx):
+                        child_name = model.itemFromIndex(child_idx).text()
+                        expanded.add((row, child_name))
 
         model.removeRows(0, model.rowCount())
 
@@ -346,6 +361,18 @@ class Visualizer:
                 root.appendRow([vec_key, vec_val])
 
             model.appendRow([root, root_val])
+
+        # Restore expanded state
+        for row in range(model.rowCount()):
+            root_idx = model.index(row, 0)
+            if (row,) in expanded:
+                tree.setExpanded(root_idx, True)
+                root_item = model.itemFromIndex(root_idx)
+                for child_row in range(root_item.rowCount()):
+                    child_idx = model.index(child_row, 0, root_idx)
+                    child_name = model.itemFromIndex(child_idx).text()
+                    if (row, child_name) in expanded:
+                        tree.setExpanded(child_idx, True)
 
         model.itemChanged.connect(self._on_loop_property_changed)
 
