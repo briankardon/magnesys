@@ -1,8 +1,10 @@
-"""Demo: visualize a Helmholtz coil pair."""
+"""Demo: visualize a mixed coil simulation."""
 
-from source import CircularCurrentLoop, Simulation, Visualizer
+from source import (
+    CircularCurrentLoop, RoundRectCurrentLoop, Simulation, Visualizer,
+)
 
-# Helmholtz coil: two identical coils separated by one radius
+# A circular Helmholtz pair with a rectangular coil in between
 R = 0.05  # 10 cm diameter
 sim = Simulation([
     CircularCurrentLoop(
@@ -16,6 +18,14 @@ sim = Simulation([
         center=[0, 0, -R / 2],
         normal=[0, 0, 1],
         current=1.0,
+    ),
+    RoundRectCurrentLoop(
+        side_lengths=(0.14, 0.08),
+        corner_radius=0.01,
+        center=[0, 0, 0],
+        normal=[0, 0, 1],
+        orientation=[1, 0, 0],
+        current=0.5,
     ),
 ])
 
