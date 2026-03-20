@@ -139,7 +139,7 @@ class Visualizer:
         self._grid_extents = None
         self._grid_resolution = 10
         self._field_scale = "auto"
-        self._arrow_size_mode = "linear"
+        self._arrow_size_mode = "uniform"
         self._auto_update = True
         self._loop_line_width = 3.0
 
@@ -165,7 +165,7 @@ class Visualizer:
         grid_extents=None,
         grid_resolution=10,
         field_scale="auto",
-        arrow_size_mode="linear",
+        arrow_size_mode="uniform",
         loop_line_width=3.0,
         show_field=True,
         show_loops=True,
@@ -286,6 +286,12 @@ class Visualizer:
         self._loops_tree.setModel(self._loops_model)
         self._loops_tree.setEditTriggers(QTreeView.EditTrigger.DoubleClicked)
         self._loops_tree.setAlternatingRowColors(True)
+        self._loops_tree.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu,
+        )
+        self._loops_tree.customContextMenuRequested.connect(
+            self._on_loops_tree_context_menu,
+        )
         self._loops_tree.header().setStretchLastSection(True)
         self._loops_tree.header().setSectionResizeMode(
             0, QHeaderView.ResizeMode.ResizeToContents,
@@ -564,6 +570,102 @@ class Visualizer:
         export_path_action = QAction("Export field along &path...", window)
         export_path_action.triggered.connect(self._on_export_field_along_path)
         export_menu.addAction(export_path_action)
+
+        # ---- Edit menu ----
+        edit_menu = menu_bar.addMenu("&Edit")
+
+        add_menu = edit_menu.addMenu("&Add loop")
+        add_circular = QAction("&Circular", window)
+        add_circular.triggered.connect(self._on_add_circular_loop)
+        add_menu.addAction(add_circular)
+
+        add_round_rect = QAction("&Rounded rectangle", window)
+        add_round_rect.triggered.connect(self._on_add_round_rect_loop)
+        add_menu.addAction(add_round_rect)
+
+        edit_menu.addSeparator()
+
+        delete_action = QAction("&Delete selected loop", window)
+        delete_action.setShortcut(QKeySequence.StandardKey.Delete)
+        delete_action.triggered.connect(self._on_delete_selected_loop)
+        edit_menu.addAction(delete_action)
+
+    # ------------------------------------------------------------------
+    # Add / delete loops
+    # ------------------------------------------------------------------
+
+    def _selected_loop_index(self):
+        """Return the index of the currently selected loop, or None."""
+        idx = self._loops_tree.currentIndex()
+        if not idx.isValid():
+            return None
+        # Walk up to the top-level row (the loop root)
+        while idx.parent().isValid():
+            idx = idx.parent()
+        return idx.row()
+
+    def _on_add_circular_loop(self):
+        """Add a circular loop with default parameters."""
+        from .circular_current_loop import CircularCurrentLoop
+
+        extents = self._auto_extents()
+        cx = (extents[0] + extents[1]) / 2
+        cy = (extents[2] + extents[3]) / 2
+        cz = (extents[4] + extents[5]) / 2
+        span = (extents[1] - extents[0])
+
+        loop = CircularCurrentLoop(
+            diameter=span * 0.4,
+            center=[cx, cy, cz],
+            normal=[0, 0, 1],
+            current=1.0,
+        )
+        self.simulation.add_loop(loop)
+        self._rebuild_scene()
+
+    def _on_add_round_rect_loop(self):
+        """Add a rounded-rectangle loop with default parameters."""
+        from .round_rect_current_loop import RoundRectCurrentLoop
+
+        extents = self._auto_extents()
+        cx = (extents[0] + extents[1]) / 2
+        cy = (extents[2] + extents[3]) / 2
+        cz = (extents[4] + extents[5]) / 2
+        span = (extents[1] - extents[0])
+
+        a = span * 0.4
+        b = span * 0.25
+        loop = RoundRectCurrentLoop(
+            side_lengths=(a, b),
+            corner_radius=min(a, b) * 0.1,
+            center=[cx, cy, cz],
+            normal=[0, 0, 1],
+            orientation=[1, 0, 0],
+            current=1.0,
+        )
+        self.simulation.add_loop(loop)
+        self._rebuild_scene()
+
+    def _on_delete_selected_loop(self):
+        """Delete the loop currently selected in the tree."""
+        loop_idx = self._selected_loop_index()
+        if loop_idx is None or loop_idx >= len(self.simulation.loops):
+            return
+        self.simulation.remove_loop(loop_idx)
+        self._rebuild_scene()
+
+    def _on_loops_tree_context_menu(self, position):
+        """Right-click context menu on the loops tree."""
+        loop_idx = self._selected_loop_index()
+        if loop_idx is None:
+            return
+
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu(self._loops_tree)
+        delete_action = menu.addAction("Delete loop")
+        action = menu.exec(self._loops_tree.viewport().mapToGlobal(position))
+        if action == delete_action:
+            self._on_delete_selected_loop()
 
     # ------------------------------------------------------------------
     # Project save / load
