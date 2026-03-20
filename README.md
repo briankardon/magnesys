@@ -13,15 +13,23 @@ A Python-based magnetic field simulator with an interactive 3D visualization GUI
 
 ### Visualization
 - **Interactive 3D viewer** powered by PyVista + Qt, with pan/rotate/zoom
-- **Quiver plot** of the magnetic field with three arrow scaling modes (uniform, linear, logarithmic)
+- **Quiver plot** of the magnetic field with three arrow scaling modes (uniform, logarithmic, linear), selectable via radio buttons
 - **Draggable slice plane** — compute and display the field on an arbitrary 2D cross-section
 - **Sample line with 2D plot** — drag a line through the field and see Bx, By, Bz, and |B| plotted vs distance (pyqtgraph)
 - **Current direction indicators** — arrowheads on each loop showing the direction of current flow
 - **Near-wire filtering** — points too close to the wire (where the thin-wire model diverges) are automatically excluded from visualization and color scaling
 
+### GUI controls
+- **Loops tree view** — expandable list of all loops with editable properties (double-click to edit). Vectors expand into individual x/y/z components. Changes update the 3D view in real time.
+- **Add/delete loops** — Edit menu to add new circular or rounded-rectangle loops with defaults. Delete via Edit menu, right-click context menu, or Delete key.
+- **Grid resolution slider** with live spacing readout in cm/mm
+- **Auto-update toggle** — disable for expensive simulations, use the Update button manually
+- **Arrow scaling radio buttons** — switch between uniform, logarithmic (default), and linear
+
 ### Project files
 - **`.mag` file format** — human-readable JSON storing simulation, visualization settings, camera position, slice plane state, and sample path
-- **File menu** with Open (Ctrl+O), Save (Ctrl+S), Save As (Ctrl+Shift+S)
+- **File menu** — Open (Ctrl+O), Save (Ctrl+S), Save As (Ctrl+Shift+S)
+- **Export menu** — Export field along path to CSV with configurable sampling interval
 - Backward-compatible with v1 simulation-only JSON files
 
 ## Supported Geometries
@@ -52,6 +60,16 @@ python magnesys.py
 # Open a project file
 python magnesys.py demos/helmholtz_coil.mag
 ```
+
+In the GUI you can:
+- **Add loops** via Edit → Add loop → Circular / Rounded rectangle
+- **Edit loop properties** by double-clicking values in the tree view
+- **Delete loops** by selecting one and pressing Delete (or right-click → Delete loop)
+- **Adjust the field grid** with the resolution slider
+- **Enable a slice plane** to see the field on a 2D cross-section (draggable)
+- **Enable a sample line** to plot Bx, By, Bz, |B| vs distance in a 2D graph (draggable endpoints)
+- **Export field data** along the sample line to CSV via Export → Export field along path
+- **Save/open projects** as `.mag` files preserving all settings and camera position
 
 ### Python API
 
@@ -88,7 +106,7 @@ X, Y, Z = np.meshgrid(
 Bx, By, Bz = sim.magnetic_field_on_grid(X, Y, Z)
 
 # Open the interactive 3D viewer
-Visualizer(sim).show(grid_resolution=8, arrow_size_mode="uniform")
+Visualizer(sim).show(grid_resolution=8)
 
 # Save / load
 sim.save("my_simulation.json")
@@ -138,13 +156,17 @@ For arbitrary wire shapes, subclass `PathBasedLoop` instead — just implement `
 ## Architecture
 
 ```
+magnesys.py                      # CLI launcher
 source/
-    current_loop.py          # Abstract base class + registry
-    circular_current_loop.py # Exact field via elliptic integrals
-    path_based_loop.py       # Biot-Savart base for arbitrary paths
+    current_loop.py              # Abstract base class + registry
+    circular_current_loop.py     # Exact field via elliptic integrals
+    path_based_loop.py           # Biot-Savart base for arbitrary paths
     round_rect_current_loop.py
-    path.py                  # SamplePath / LineSegmentPath
-    simulation.py            # Loop collection + field computation
-    visualization.py         # Qt GUI + PyVista 3D + pyqtgraph 2D
-    project.py               # .mag file I/O
+    path.py                      # SamplePath / LineSegmentPath
+    simulation.py                # Loop collection + field computation
+    visualization.py             # Qt GUI + PyVista 3D + pyqtgraph 2D
+    project.py                   # .mag file I/O
+demos/
+    *.py                         # Example scripts
+    *.mag                        # Loadable project files
 ```
