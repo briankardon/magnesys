@@ -162,7 +162,7 @@ class Visualizer:
                        else self._grid_resolution[0])
         self._slider_widget = plotter.add_slider_widget(
             self._on_resolution_changed,
-            rng=[3, 25],
+            rng=[3, 35],
             value=initial_res,
             title="Grid points per axis",
             pointa=(L, 0.85),
