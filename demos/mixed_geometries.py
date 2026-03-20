@@ -1,11 +1,16 @@
-"""Demo: visualize a mixed coil simulation."""
+"""Mixed loop geometries: a circular Helmholtz pair with a rectangular
+coil in the midplane.
+
+Demonstrates: combining CircularCurrentLoop and RoundRectCurrentLoop
+in a single simulation.
+"""
 
 from source import (
     CircularCurrentLoop, RoundRectCurrentLoop, Simulation, Visualizer,
 )
 
-# A circular Helmholtz pair with a rectangular coil in between
-R = 0.05  # 10 cm diameter
+R = 0.05
+
 sim = Simulation([
     CircularCurrentLoop(
         diameter=2 * R,
@@ -29,11 +34,4 @@ sim = Simulation([
     ),
 ])
 
-vis = Visualizer(sim)
-
-# Try different arrow size modes:
-#   "linear"  - arrow length proportional to |B| (can be dominated by strong fields)
-#   "uniform" - all arrows same size, magnitude shown by color only
-#   "log"     - arrow length proportional to log(|B|), compresses dynamic range
-# Use field_scale to adjust overall arrow size (float, or "auto")
-vis.show(grid_resolution=8, arrow_size_mode="uniform")
+Visualizer(sim).show(grid_resolution=8, arrow_size_mode="uniform")
