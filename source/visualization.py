@@ -34,7 +34,7 @@ class Visualizer:
         self._plotter = None
         self._field_actor = None
 
-        # State tracked for refreshing
+        # State tracked for updateing
         self._grid_extents = None
         self._grid_resolution = 10
         self._field_scale = "auto"
@@ -44,7 +44,7 @@ class Visualizer:
         # Widget references for dynamic updates
         self._slider_widget = None
         self._spacing_text_actor = None
-        self._refresh_widget = None
+        self._update_widget = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -106,7 +106,7 @@ class Visualizer:
             self._add_loops(plotter, loop_line_width)
 
         if show_field and self.simulation.loops:
-            self._refresh_field()
+            self._update_field()
 
         self._add_widgets(plotter)
 
@@ -198,10 +198,10 @@ class Visualizer:
             color="black",
         )
 
-        # ---- Refresh button ----
+        # ---- Update button ----
         rb_y = int(0.58 * win_h)
-        self._refresh_widget = plotter.add_checkbox_button_widget(
-            self._on_refresh_clicked,
+        self._update_widget = plotter.add_checkbox_button_widget(
+            self._on_update_clicked,
             value=False,
             position=(cb_x, rb_y),
             size=cb_size,
@@ -209,7 +209,7 @@ class Visualizer:
             color_off="steelblue",
         )
         plotter.add_text(
-            "Refresh",
+            "Update",
             position=(cb_x + cb_size + 8, rb_y + 2),
             font_size=9,
             color="black",
@@ -232,24 +232,26 @@ class Visualizer:
         self._grid_resolution = new_res
         self._update_spacing_display()
         if self._auto_update:
-            self._refresh_field()
+            self._update_field()
 
     def _on_auto_update_toggled(self, state):
         """Callback for the auto-update checkbox."""
         self._auto_update = bool(state)
+        if self._auto_update:
+            self._update_field()
 
-    def _on_refresh_clicked(self, _state):
-        """Callback for the manual refresh button."""
-        self._refresh_field()
+    def _on_update_clicked(self, _state):
+        """Callback for the manual update button."""
+        self._update_field()
         # Reset to "unpressed" appearance
-        if self._refresh_widget is not None:
-            self._refresh_widget.GetRepresentation().SetState(0)
+        if self._update_widget is not None:
+            self._update_widget.GetRepresentation().SetState(0)
 
     # ------------------------------------------------------------------
-    # Field refresh
+    # Field update
     # ------------------------------------------------------------------
 
-    def _refresh_field(self):
+    def _update_field(self):
         """Recompute and redraw the magnetic field arrows."""
         plotter = self._plotter
         if plotter is None:
