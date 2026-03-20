@@ -145,6 +145,11 @@ class Visualizer:
         self._auto_update = True
         self._loop_line_width = 3.0
         self._time = 0.0  # current time in seconds
+        self._auto_scale = True  # auto-scale 3D color bar, arrows, and 2D y-axis
+        self._locked_clim = None  # (vmin, vmax) when auto-scale is off
+        self._locked_yrange = None  # (ymin, ymax) when auto-scale is off
+        self._locked_arrow_scale = None  # resolved glyph factor when locked
+        self._locked_log_min_mag = None  # log-mode reference floor when locked
 
         # Slice plane state
         self._slice_enabled = False
@@ -158,8 +163,10 @@ class Visualizer:
         self._path_visuals = []  # parallel to _sample_paths; dicts or None
         self._selected_path_index = 0
         self._path_selector = None  # QComboBox reference
+        self._plot_mode = "position"  # "position" or "time"
         self._plot_widget = None
         self._plot_curves = {}
+        self._time_cursor = None  # vertical line on time-mode plot
 
     # ------------------------------------------------------------------
     # Public API
@@ -381,6 +388,11 @@ class Visualizer:
         self._sample_paths_cb.setChecked(self._sample_paths_visible)
         self._sample_paths_cb.toggled.connect(self._on_sample_paths_toggled)
         opts_layout.addWidget(self._sample_paths_cb)
+
+        self._auto_scale_cb = QCheckBox("Auto-scale")
+        self._auto_scale_cb.setChecked(self._auto_scale)
+        self._auto_scale_cb.toggled.connect(self._on_auto_scale_toggled)
+        opts_layout.addWidget(self._auto_scale_cb)
 
         layout.addWidget(opts_group)
 
@@ -684,23 +696,56 @@ class Visualizer:
         self._path_selector.currentIndexChanged.connect(self._on_path_selected)
         self._path_selector.raise_()
 
-        # Reposition combo on resize via event filter
-        self._resize_filter = _ResizeFilter(self._reposition_path_selector)
+        # Plot mode radio buttons (overlaid, below the combo)
+        self._mode_position_rb = QRadioButton("B vs. position", self._plot_widget)
+        self._mode_position_rb.setChecked(True)
+        self._mode_position_rb.setStyleSheet("background: rgba(255,255,255,180); padding: 1px 4px;")
+        self._mode_position_rb.toggled.connect(
+            lambda checked: self._on_plot_mode_changed("position") if checked else None
+        )
+
+        self._mode_time_rb = QRadioButton("B vs. time", self._plot_widget)
+        self._mode_time_rb.setStyleSheet("background: rgba(255,255,255,180); padding: 1px 4px;")
+        self._mode_time_rb.toggled.connect(
+            lambda checked: self._on_plot_mode_changed("time") if checked else None
+        )
+
+        # Time cursor (vertical line, hidden until time mode)
+        self._time_cursor = pg.InfiniteLine(
+            pos=0, angle=90, pen=pg.mkPen("#888888", width=1, style=Qt.PenStyle.DashLine),
+            movable=False,
+        )
+        self._plot_widget.addItem(self._time_cursor)
+        self._time_cursor.setVisible(False)
+
+        # Reposition overlaid widgets on resize
+        self._resize_filter = _ResizeFilter(self._reposition_plot_overlays)
         self._plot_widget.installEventFilter(self._resize_filter)
 
         self._refresh_path_selector()
 
         return self._plot_widget
 
-    def _reposition_path_selector(self):
-        """Anchor the path selector to the upper-right corner of the plot."""
+    def _reposition_plot_overlays(self):
+        """Anchor the overlaid widgets to the upper-right corner of the plot."""
         if self._path_selector is None or self._plot_widget is None:
             return
         margin = 6
-        combo = self._path_selector
         pw = self._plot_widget
+
+        # Path selector combo — top right
+        combo = self._path_selector
         x = pw.width() - combo.width() - margin
         combo.move(x, margin)
+
+        # Radio buttons — below the combo, right-aligned
+        rb_y = margin + combo.height() + 2
+        self._mode_position_rb.adjustSize()
+        self._mode_time_rb.adjustSize()
+        rb_w = max(self._mode_position_rb.width(), self._mode_time_rb.width())
+        rb_x = pw.width() - rb_w - margin
+        self._mode_position_rb.move(rb_x, rb_y)
+        self._mode_time_rb.move(rb_x, rb_y + self._mode_position_rb.height() + 1)
 
     def _build_plot_widget(self):
         """Build the pyqtgraph plot for B-field along the sample path."""
@@ -752,6 +797,21 @@ class Visualizer:
             return
         self._selected_path_index = index
         self._update_plot()
+
+    def _on_plot_mode_changed(self, mode):
+        """Callback when the plot mode radio button is toggled."""
+        self._plot_mode = mode
+        self._time_cursor.setVisible(mode == "time")
+        if mode == "position":
+            self._plot_widget.setLabel("bottom", "Distance along path", units="m")
+        else:
+            self._plot_widget.setLabel("bottom", "Time", units="s")
+        self._update_plot()
+
+    def _update_time_cursor(self):
+        """Move the time cursor to the current time value."""
+        if self._time_cursor is not None and self._plot_mode == "time":
+            self._time_cursor.setValue(self._time)
 
     # ------------------------------------------------------------------
     # Menu bar
@@ -821,6 +881,12 @@ class Visualizer:
         delete_action.setShortcut(QKeySequence.StandardKey.Delete)
         delete_action.triggered.connect(self._on_delete_selected_object)
         edit_menu.addAction(delete_action)
+
+        edit_menu.addSeparator()
+
+        clear_action = QAction("&Clear all", window)
+        clear_action.triggered.connect(self._on_clear_all)
+        edit_menu.addAction(clear_action)
 
     # ------------------------------------------------------------------
     # Add / delete loops and paths
@@ -1034,6 +1100,17 @@ class Visualizer:
         self._refresh_tree()
         if path_idx == self._selected_path_index:
             self._update_plot()
+
+    def _on_clear_all(self):
+        """Remove all loops and paths."""
+        self.simulation.loops.clear()
+        self._teardown_all_path_visuals()
+        self._sample_paths.clear()
+        self._selected_path_index = 0
+        self._rebuild_scene()
+        self._refresh_path_selector()
+        self._update_plot()
+        self._update_time_range()
 
     def _on_delete_selected_object(self):
         """Delete the object currently selected in the tree."""
@@ -1418,6 +1495,20 @@ class Visualizer:
         if self._auto_update:
             self._update_field()
 
+    def _on_auto_scale_toggled(self, checked):
+        """Callback for the auto-scale checkbox."""
+        self._auto_scale = checked
+        if self._auto_scale:
+            # Clear locked ranges so next update auto-scales fresh
+            self._locked_clim = None
+            self._locked_yrange = None
+            self._locked_arrow_scale = None
+            self._locked_log_min_mag = None
+            if self._plot_widget is not None:
+                self._plot_widget.enableAutoRange(axis="y")
+            if self._auto_update:
+                self._update_field()
+
     def _on_update_clicked(self):
         """Callback for the manual update button."""
         self._update_field()
@@ -1432,6 +1523,7 @@ class Visualizer:
             self._time_slider.blockSignals(True)
             self._time_slider.setValue(max(0, min(1000, pos)))
             self._time_slider.blockSignals(False)
+        self._update_time_cursor()
         if self._auto_update:
             self._update_field()
 
@@ -1442,6 +1534,7 @@ class Visualizer:
         self._time_spin.blockSignals(True)
         self._time_spin.setValue(self._time)
         self._time_spin.blockSignals(False)
+        self._update_time_cursor()
         if self._auto_update:
             self._update_field()
 
@@ -1813,6 +1906,25 @@ class Visualizer:
                 self._waypoint_markers.setData([], [])
             return
 
+        if self._plot_mode == "time":
+            self._update_plot_time_mode(sp)
+        else:
+            self._update_plot_position_mode(sp)
+
+        # Lock or auto-scale the 2D y-axis
+        pw = self._plot_widget
+        if pw is not None:
+            if self._auto_scale:
+                pw.enableAutoRange(axis="y")
+                yrange = pw.viewRange()[1]
+                self._locked_yrange = tuple(yrange)
+            else:
+                pw.disableAutoRange(axis="y")
+                if self._locked_yrange is not None:
+                    pw.setYRange(*self._locked_yrange, padding=0)
+
+    def _update_plot_position_mode(self, sp):
+        """B vs. position along path at the current time."""
         n = self.N_PATH_SAMPLES
         points = sp.get_points(n)
         distances = sp.get_distances(n)
@@ -1829,7 +1941,7 @@ class Visualizer:
         self._plot_curves["Bz"].setData(distances, Bz)
         self._plot_curves["|B|"].setData(distances, Bmag)
 
-        # Waypoint markers for polyline paths
+        # Waypoint markers for polyline/spline paths
         if self._waypoint_markers is not None:
             if isinstance(sp, (PolylinePath, SplinePath)):
                 wp_dists = np.concatenate([[0.0], np.cumsum(sp.segment_lengths)])
@@ -1838,6 +1950,54 @@ class Visualizer:
                 )
             else:
                 self._waypoint_markers.setData([], [])
+
+    def _update_plot_time_mode(self, sp):
+        """B vs. time as measured by a sensor moving along the path."""
+        n = self.N_PATH_SAMPLES
+        t_max = self._auto_time_range()
+        t_samples = np.linspace(0, t_max, n)
+
+        # Sample path points (sensor moves at constant speed)
+        points = sp.get_points(n)
+        x, y, z = points[:, 0], points[:, 1], points[:, 2]
+
+        # Precompute each source's spatial field (expensive, done once)
+        # Then apply time modulation per sample (cheap)
+        Bx_total = np.zeros(n)
+        By_total = np.zeros(n)
+        Bz_total = np.zeros(n)
+
+        for loop in self.simulation.loops:
+            bx, by, bz = loop.magnetic_field(x, y, z)
+            bx = np.asarray(bx).ravel()
+            by = np.asarray(by).ravel()
+            bz = np.asarray(bz).ravel()
+
+            f = getattr(loop, "frequency", 0.0)
+            phi = getattr(loop, "phase", 0.0)
+            if f != 0.0 or phi != 0.0:
+                mod = np.cos(2.0 * np.pi * f * t_samples + phi)
+                bx = bx * mod
+                by = by * mod
+                bz = bz * mod
+
+            Bx_total += bx
+            By_total += by
+            Bz_total += bz
+
+        Bmag = np.sqrt(Bx_total**2 + By_total**2 + Bz_total**2)
+
+        self._plot_curves["Bx"].setData(t_samples, Bx_total)
+        self._plot_curves["By"].setData(t_samples, By_total)
+        self._plot_curves["Bz"].setData(t_samples, Bz_total)
+        self._plot_curves["|B|"].setData(t_samples, Bmag)
+
+        # Hide waypoint markers in time mode
+        if self._waypoint_markers is not None:
+            self._waypoint_markers.setData([], [])
+
+        # Update time cursor position
+        self._update_time_cursor()
 
     # ------------------------------------------------------------------
     # Internal rendering helpers
@@ -2045,7 +2205,11 @@ class Visualizer:
         grid = pv.PolyData(points)
         grid["magnitude"] = magnitudes
 
-        resolved_scale = field_scale
+        # Use locked arrow scale if auto-scale is off and we have a saved value
+        if not self._auto_scale and self._locked_arrow_scale is not None:
+            resolved_scale = self._locked_arrow_scale
+        else:
+            resolved_scale = field_scale
 
         if arrow_size_mode == "uniform":
             safe_mag = np.where(magnitudes > 0, magnitudes, 1.0)
@@ -2063,10 +2227,17 @@ class Visualizer:
         elif arrow_size_mode == "log":
             nonzero = magnitudes > 0
             if np.any(nonzero):
-                min_mag = magnitudes[nonzero].min()
+                current_min = magnitudes[nonzero].min()
+                # Use locked floor when auto-scale is off
+                if not self._auto_scale and self._locked_log_min_mag is not None:
+                    min_mag = self._locked_log_min_mag
+                else:
+                    min_mag = current_min
+                    if self._auto_scale:
+                        self._locked_log_min_mag = min_mag
                 log_scale = np.where(
                     nonzero,
-                    np.log10(magnitudes / min_mag) + 1.0,
+                    np.maximum(np.log10(magnitudes / min_mag) + 1.0, 0.0),
                     0.0,
                 )
             else:
@@ -2097,13 +2268,32 @@ class Visualizer:
                 orient="B", scale="scale", factor=resolved_scale,
             )
 
-        field_actor = plotter.add_mesh(
-            arrows,
+        # Capture the resolved scale for locking
+        if self._auto_scale:
+            self._locked_arrow_scale = resolved_scale
+
+        # Compute color limits using percentiles to ignore near-wire outliers
+        mag = arrows["magnitude"]
+        if self._auto_scale:
+            if len(mag) > 0:
+                vmin, vmax = np.percentile(mag, [2, 98])
+                if vmax <= vmin:
+                    vmax = vmin + 1e-20
+                self._locked_clim = (float(vmin), float(vmax))
+            else:
+                self._locked_clim = None
+
+        mesh_kwargs = dict(
             scalars="magnitude",
             cmap="coolwarm",
             scalar_bar_args={"title": "|B| (T)"},
             reset_camera=False,
         )
+
+        if self._locked_clim is not None:
+            mesh_kwargs["clim"] = self._locked_clim
+
+        field_actor = plotter.add_mesh(arrows, **mesh_kwargs)
 
         return field_actor
 
