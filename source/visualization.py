@@ -767,6 +767,10 @@ class Visualizer:
         add_round_rect.triggered.connect(self._on_add_round_rect_loop)
         add_loop_menu.addAction(add_round_rect)
 
+        add_inf_line = QAction("&Infinite line", window)
+        add_inf_line.triggered.connect(self._on_add_infinite_line)
+        add_loop_menu.addAction(add_inf_line)
+
         add_path_menu = edit_menu.addMenu("Add &path")
         add_line_seg = QAction("&Line segment", window)
         add_line_seg.triggered.connect(self._on_add_line_segment_path)
@@ -842,6 +846,23 @@ class Visualizer:
             center=[cx, cy, cz],
             normal=[0, 0, 1],
             orientation=[1, 0, 0],
+            current=1.0,
+        )
+        self.simulation.add_loop(loop)
+        self._rebuild_scene()
+
+    def _on_add_infinite_line(self):
+        """Add an infinite line current with default parameters."""
+        from .infinite_line_current import InfiniteLineCurrent
+
+        extents = self._auto_extents()
+        cx = (extents[0] + extents[1]) / 2
+        cy = (extents[2] + extents[3]) / 2
+        cz = (extents[4] + extents[5]) / 2
+
+        loop = InfiniteLineCurrent(
+            center=[cx, cy, cz],
+            normal=[0, 0, 1],
             current=1.0,
         )
         self.simulation.add_loop(loop)
@@ -1737,8 +1758,20 @@ class Visualizer:
 
     def _add_loops(self, plotter, line_width):
         """Add current loop geometry with current-direction arrowheads."""
+        from .infinite_line_current import InfiniteLineCurrent
+
+        extents = self._grid_extents or self._auto_extents()
+        grid_span = max(
+            extents[1] - extents[0],
+            extents[3] - extents[2],
+            extents[5] - extents[4],
+        )
+
         for i, loop in enumerate(self.simulation.loops):
-            path = loop.get_path()
+            if isinstance(loop, InfiniteLineCurrent):
+                path = loop.get_path(half_length=grid_span)
+            else:
+                path = loop.get_path()
             n = len(path)
             points = path
             lines = np.column_stack([
@@ -1757,13 +1790,19 @@ class Visualizer:
             )
             self._loop_actors.append(actor)
 
-            idx = 0
-            tangent = path[(idx + 1) % (n - 1)] - path[idx]
-            tangent = tangent / np.linalg.norm(tangent)
+            # Current-direction arrowhead at the center of the path
+            mid = n // 2
+            tangent = path[min(mid + 1, n - 1)] - path[max(mid - 1, 0)]
+            t_norm = np.linalg.norm(tangent)
+            if t_norm > 0:
+                tangent = tangent / t_norm
             extent = path.max(axis=0) - path.min(axis=0)
-            cone_height = np.max(extent) * 0.08
+            if isinstance(loop, InfiniteLineCurrent):
+                cone_height = grid_span * 0.03
+            else:
+                cone_height = np.max(extent) * 0.08
             cone = pv.Cone(
-                center=path[idx] + tangent * cone_height * 0.5,
+                center=path[mid] + tangent * cone_height * 0.5,
                 direction=tangent,
                 height=cone_height,
                 radius=cone_height * 0.4,
@@ -1982,12 +2021,19 @@ class Visualizer:
 
     def _auto_extents(self):
         """Compute grid extents from loop positions and sizes."""
+        from .infinite_line_current import InfiniteLineCurrent
+
         if not self.simulation.loops:
             return (-0.1, 0.1, -0.1, 0.1, -0.1, 0.1)
 
-        all_points = np.vstack([
-            loop.get_path() for loop in self.simulation.loops
-        ])
+        paths = []
+        for loop in self.simulation.loops:
+            if isinstance(loop, InfiniteLineCurrent):
+                # Use a small region around the center point
+                paths.append(loop.get_path(half_length=0.1))
+            else:
+                paths.append(loop.get_path())
+        all_points = np.vstack(paths)
         mins = all_points.min(axis=0)
         maxs = all_points.max(axis=0)
 
