@@ -2015,6 +2015,7 @@ class Visualizer:
             scalars="magnitude",
             cmap="coolwarm",
             scalar_bar_args={"title": "|B| (T)"},
+            reset_camera=False,
         )
 
         return field_actor

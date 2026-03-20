@@ -117,7 +117,7 @@ class Simulation:
           - v2 full project: {"magnesys_version": 2, "simulation": {"loops": [...]}}
         """
         version = data.get("magnesys_version", 1)
-        if version == 2:
+        if version in (2, 3):
             loop_list = data["simulation"]["loops"]
         elif version == 1:
             loop_list = data["loops"]
