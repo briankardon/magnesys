@@ -1,7 +1,23 @@
-"""Visualization of magnetic field simulations using PyVista."""
+"""Visualization of magnetic field simulations using PyVista + Qt."""
+
+import sys
 
 import numpy as np
 import pyvista as pv
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
+from pyvistaqt import QtInteractor
 
 
 class Visualizer:
@@ -25,10 +41,6 @@ class Visualizer:
         "#d23be7",  # purple
     ]
 
-    # Panel layout constants (normalized viewport coordinates)
-    _PANEL_LEFT = 0.78   # left edge of the control panel region
-    _PANEL_RIGHT = 0.98
-
     def __init__(self, simulation):
         self.simulation = simulation
         self._plotter = None
@@ -46,11 +58,6 @@ class Visualizer:
         self._slice_normal = np.array([0.0, 0.0, 1.0])
         self._slice_origin = np.array([0.0, 0.0, 0.0])
         self._plane_widget = None
-
-        # Widget references for dynamic updates
-        self._slider_widget = None
-        self._spacing_text_actor = None
-        self._update_widget = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -104,23 +111,114 @@ class Visualizer:
         self._field_scale = field_scale
         self._arrow_size_mode = arrow_size_mode
 
-        plotter = pv.Plotter(window_size=(1400, 900))
+        # ---- Build the Qt application and window ----
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+
+        window = QMainWindow()
+        window.setWindowTitle("Magnesys")
+        window.resize(1400, 900)
+
+        # Central widget with horizontal layout: [3D viewport | controls]
+        central = QWidget()
+        window.setCentralWidget(central)
+        hlayout = QHBoxLayout(central)
+        hlayout.setContentsMargins(0, 0, 0, 0)
+
+        # 3D viewport
+        plotter = QtInteractor(central)
         plotter.set_background(background)
+        hlayout.addWidget(plotter, stretch=4)
         self._plotter = plotter
 
+        # Controls panel
+        panel = self._build_control_panel()
+        hlayout.addWidget(panel, stretch=0)
+
+        # ---- Populate the 3D scene ----
         if show_loops:
             self._add_loops(plotter, loop_line_width)
 
         if show_field and self.simulation.loops:
             self._update_field()
 
-        self._add_widgets(plotter)
-
         plotter.add_axes()
-        plotter.show()
+        plotter.reset_camera()
+
+        window.show()
+        app.exec()
 
     # ------------------------------------------------------------------
-    # Widgets
+    # Qt control panel
+    # ------------------------------------------------------------------
+
+    def _build_control_panel(self):
+        """Build the right-side Qt control panel."""
+        panel = QWidget()
+        panel.setFixedWidth(220)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        # ---- Grid resolution ----
+        grid_group = QGroupBox("Grid")
+        grid_layout = QVBoxLayout(grid_group)
+
+        # Slider
+        slider_row = QHBoxLayout()
+        slider_row.addWidget(QLabel("Points:"))
+        self._res_slider = QSlider(Qt.Orientation.Horizontal)
+        self._res_slider.setRange(3, 35)
+        initial_res = (self._grid_resolution if isinstance(self._grid_resolution, int)
+                       else self._grid_resolution[0])
+        self._res_slider.setValue(initial_res)
+        slider_row.addWidget(self._res_slider)
+        self._res_label = QLabel(str(initial_res))
+        self._res_label.setFixedWidth(24)
+        slider_row.addWidget(self._res_label)
+        grid_layout.addLayout(slider_row)
+
+        # Spacing readout
+        spacing = self._compute_spacing(initial_res)
+        self._spacing_label = QLabel(
+            f"Spacing: {self._format_spacing(spacing)}"
+        )
+        self._spacing_label.setStyleSheet("color: grey; font-size: 11px;")
+        grid_layout.addWidget(self._spacing_label)
+
+        self._res_slider.valueChanged.connect(self._on_resolution_changed)
+
+        layout.addWidget(grid_group)
+
+        # ---- Options ----
+        opts_group = QGroupBox("Options")
+        opts_layout = QVBoxLayout(opts_group)
+
+        # Auto-update
+        self._auto_update_cb = QCheckBox("Auto-update")
+        self._auto_update_cb.setChecked(self._auto_update)
+        self._auto_update_cb.toggled.connect(self._on_auto_update_toggled)
+        opts_layout.addWidget(self._auto_update_cb)
+
+        # Slice plane
+        self._slice_cb = QCheckBox("Slice plane")
+        self._slice_cb.setChecked(self._slice_enabled)
+        self._slice_cb.toggled.connect(self._on_slice_toggled)
+        opts_layout.addWidget(self._slice_cb)
+
+        layout.addWidget(opts_group)
+
+        # ---- Update button ----
+        self._update_btn = QPushButton("Update")
+        self._update_btn.clicked.connect(self._on_update_clicked)
+        layout.addWidget(self._update_btn)
+
+        layout.addStretch()
+
+        return panel
+
+    # ------------------------------------------------------------------
+    # Spacing helpers
     # ------------------------------------------------------------------
 
     def _compute_spacing(self, resolution):
@@ -142,142 +240,43 @@ class Visualizer:
         else:
             return f"{spacing_m * 1000:.2f} mm"
 
-    def _add_widgets(self, plotter):
-        """Add interactive controls in a right-side panel."""
-        L = self._PANEL_LEFT
-        R = self._PANEL_RIGHT
-
-        # ---- Panel title ----
-        plotter.add_text(
-            "Controls",
-            position=(L + 0.01, 0.94),
-            viewport=True,
-            font_size=11,
-            color="black",
-            font="courier",
-        )
-
-        # ---- Grid spacing slider ----
-        initial_res = (self._grid_resolution if isinstance(self._grid_resolution, int)
-                       else self._grid_resolution[0])
-        self._slider_widget = plotter.add_slider_widget(
-            self._on_resolution_changed,
-            rng=[3, 35],
-            value=initial_res,
-            title="Grid points per axis",
-            pointa=(L, 0.85),
-            pointb=(R, 0.85),
-            style="modern",
-            fmt="%.0f",
-        )
-
-        # Spacing readout below slider
-        spacing = self._compute_spacing(initial_res)
-        self._spacing_text_actor = plotter.add_text(
-            f"Spacing: {self._format_spacing(spacing)}",
-            position=(L + 0.01, 0.76),
-            viewport=True,
-            font_size=9,
-            color="gray",
-        )
-
-        # ---- Checkboxes and buttons ----
-        win_w, win_h = plotter.window_size
-        cb_x = int(L * win_w) + 5
-        cb_size = 25
-
-        # Auto-update checkbox
-        cb_y = int(0.66 * win_h)
-        plotter.add_checkbox_button_widget(
-            self._on_auto_update_toggled,
-            value=self._auto_update,
-            position=(cb_x, cb_y),
-            size=cb_size,
-            color_on="green",
-            color_off="grey",
-        )
-        plotter.add_text(
-            "Auto-update",
-            position=(cb_x + cb_size + 8, cb_y + 2),
-            font_size=9,
-            color="black",
-        )
-
-        # Update button
-        rb_y = int(0.58 * win_h)
-        self._update_widget = plotter.add_checkbox_button_widget(
-            self._on_update_clicked,
-            value=False,
-            position=(cb_x, rb_y),
-            size=cb_size,
-            color_on="steelblue",
-            color_off="steelblue",
-        )
-        plotter.add_text(
-            "Update",
-            position=(cb_x + cb_size + 8, rb_y + 2),
-            font_size=9,
-            color="black",
-        )
-
-        # Slice plane checkbox
-        sp_y = int(0.50 * win_h)
-        plotter.add_checkbox_button_widget(
-            self._on_slice_toggled,
-            value=self._slice_enabled,
-            position=(cb_x, sp_y),
-            size=cb_size,
-            color_on="orange",
-            color_off="grey",
-        )
-        plotter.add_text(
-            "Slice plane",
-            position=(cb_x + cb_size + 8, sp_y + 2),
-            font_size=9,
-            color="black",
-        )
-
     def _update_spacing_display(self):
-        """Update the spacing readout text."""
-        if self._spacing_text_actor is None:
-            return
+        """Update the spacing readout label."""
         spacing = self._compute_spacing(self._grid_resolution)
-        self._spacing_text_actor.input = (
+        self._spacing_label.setText(
             f"Spacing: {self._format_spacing(spacing)}"
         )
 
+    # ------------------------------------------------------------------
+    # Callbacks
+    # ------------------------------------------------------------------
+
     def _on_resolution_changed(self, value):
         """Callback for the grid resolution slider."""
-        new_res = int(round(value))
-        if new_res == self._grid_resolution:
-            return
-        self._grid_resolution = new_res
+        self._grid_resolution = value
+        self._res_label.setText(str(value))
         self._update_spacing_display()
         if self._auto_update:
             self._update_field()
 
-    def _on_auto_update_toggled(self, state):
+    def _on_auto_update_toggled(self, checked):
         """Callback for the auto-update checkbox."""
-        self._auto_update = bool(state)
+        self._auto_update = checked
         if self._auto_update:
             self._update_field()
 
-    def _on_update_clicked(self, _state):
+    def _on_update_clicked(self):
         """Callback for the manual update button."""
         self._update_field()
-        # Reset to "unpressed" appearance
-        if self._update_widget is not None:
-            self._update_widget.GetRepresentation().SetState(0)
 
-    def _on_slice_toggled(self, state):
+    def _on_slice_toggled(self, checked):
         """Callback for the slice plane checkbox."""
-        self._slice_enabled = bool(state)
+        self._slice_enabled = checked
         plotter = self._plotter
         if plotter is None:
             return
 
         if self._slice_enabled:
-            # Create the plane widget
             extents = self._grid_extents or self._auto_extents()
             bounds = list(extents)
             center = [
@@ -303,14 +302,12 @@ class Visualizer:
                 test_callback=False,
             )
 
-            # Shrink the plane widget handles
             self._plane_widget.SetHandleSize(
                 self._plane_widget.GetHandleSize() * 0.5
             )
 
             self._update_field()
         else:
-            # Remove the plane widget
             if self._plane_widget is not None:
                 self._plane_widget.Off()
                 if self._plane_widget in plotter.plane_widgets:
@@ -335,7 +332,6 @@ class Visualizer:
         if plotter is None:
             return
 
-        # Remove old field actors and scalar bar
         if self._field_actor is not None:
             plotter.remove_actor(self._field_actor)
             self._field_actor = None
@@ -367,7 +363,6 @@ class Visualizer:
         for i, loop in enumerate(self.simulation.loops):
             path = loop.get_path()
             n = len(path)
-            # Build a polydata line strip
             points = path
             lines = np.column_stack([
                 np.full(n - 1, 2),
@@ -384,11 +379,9 @@ class Visualizer:
                 label=f"Loop {i}",
             )
 
-            # Arrowhead showing current direction at one point on the loop
             idx = 0
             tangent = path[(idx + 1) % (n - 1)] - path[idx]
             tangent = tangent / np.linalg.norm(tangent)
-            # Size the cone relative to the loop's bounding extent
             extent = path.max(axis=0) - path.min(axis=0)
             cone_height = np.max(extent) * 0.08
             cone = pv.Cone(
@@ -416,11 +409,9 @@ class Visualizer:
         x_min, x_max, y_min, y_max, z_min, z_max = extents
         n = resolution if isinstance(resolution, int) else resolution[0]
 
-        # Build an orthonormal basis for the plane
         normal = np.asarray(normal, dtype=float)
         normal = normal / np.linalg.norm(normal)
 
-        # Choose a vector not parallel to normal for cross product
         if abs(normal[0]) < 0.9:
             ref = np.array([1.0, 0.0, 0.0])
         else:
@@ -431,8 +422,6 @@ class Visualizer:
         v = np.cross(normal, u)
         v = v / np.linalg.norm(v)
 
-        # Determine the grid extent: project the bounding box corners
-        # onto the u and v axes
         corners = np.array([
             [x_min, y_min, z_min],
             [x_min, y_min, z_max],
@@ -456,7 +445,6 @@ class Visualizer:
         vs = np.linspace(v_min, v_max, n)
         U, V = np.meshgrid(us, vs)
 
-        # Convert back to 3D
         points = (origin
                   + U.ravel()[:, np.newaxis] * u
                   + V.ravel()[:, np.newaxis] * v)
@@ -479,7 +467,6 @@ class Visualizer:
         x, y, z = points[:, 0], points[:, 1], points[:, 2]
         Bx, By, Bz = self.simulation.magnetic_field_at(x, y, z)
 
-        # Filter near-wire points
         near_wire = self.simulation.near_wire_mask(x, y, z)
         valid = ~near_wire
 
@@ -518,7 +505,6 @@ class Visualizer:
 
         Bx, By, Bz = self.simulation.magnetic_field_on_grid(X, Y, Z)
 
-        # Filter out points too close to any wire (unphysical values)
         near_wire = self.simulation.near_wire_mask(X, Y, Z).ravel()
         valid = ~near_wire
 
@@ -532,7 +518,6 @@ class Visualizer:
         if len(points) == 0:
             return None
 
-        # Compute the target cell size for auto-scaling
         spacing = np.array([
             (x_max - x_min) / max(nx - 1, 1),
             (y_max - y_min) / max(ny - 1, 1),
@@ -621,14 +606,12 @@ class Visualizer:
         if not self.simulation.loops:
             return (-0.1, 0.1, -0.1, 0.1, -0.1, 0.1)
 
-        # Gather bounding info from all loop paths
         all_points = np.vstack([
             loop.get_path() for loop in self.simulation.loops
         ])
         mins = all_points.min(axis=0)
         maxs = all_points.max(axis=0)
 
-        # Pad by 50% of the span (or a minimum absolute padding)
         span = maxs - mins
         padding = np.maximum(span * 0.5, 0.01)
         mins -= padding
