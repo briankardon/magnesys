@@ -140,7 +140,7 @@ class Visualizer:
         self._grid_extents = None
         self._grid_resolution = 10
         self._field_scale = "auto"
-        self._arrow_size_mode = "uniform"
+        self._arrow_size_mode = "log"
         self._auto_update = True
         self._loop_line_width = 3.0
 
