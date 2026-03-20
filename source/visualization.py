@@ -893,10 +893,14 @@ class Visualizer:
 
     def _add_path(self, path):
         """Append a path and update visuals/tree/selector."""
+        was_empty = len(self._sample_paths) == 0
         self._sample_paths.append(path)
 
         if self._sample_paths_visible:
             self._create_path_visual(len(self._sample_paths) - 1)
+        elif was_empty:
+            # Auto-enable visibility when adding the first path
+            self._sample_paths_cb.setChecked(True)
 
         self._refresh_tree()
         self._refresh_path_selector()
@@ -946,6 +950,31 @@ class Visualizer:
         sp.points = np.delete(sp.points, point_idx, axis=0)
 
         # Rebuild visual (number of handles changed)
+        if self._sample_paths_visible and path_idx < len(self._path_visuals):
+            self._teardown_path_visual(path_idx)
+            self._create_path_visual(path_idx)
+
+        self._refresh_tree()
+        if path_idx == self._selected_path_index:
+            self._update_plot()
+
+    def _randomize_path(self, path_idx):
+        """Randomize all points of a path within the current grid extents."""
+        if path_idx >= len(self._sample_paths):
+            return
+        sp = self._sample_paths[path_idx]
+        extents = self._grid_extents or self._auto_extents()
+        lo = np.array([extents[0], extents[2], extents[4]])
+        hi = np.array([extents[1], extents[3], extents[5]])
+
+        if isinstance(sp, (PolylinePath, SplinePath)):
+            n = len(sp.points)
+            sp.points = lo + (hi - lo) * np.random.rand(n, 3)
+        elif isinstance(sp, LineSegmentPath):
+            sp.start = lo + (hi - lo) * np.random.rand(3)
+            sp.end = lo + (hi - lo) * np.random.rand(3)
+
+        # Rebuild visual and refresh
         if self._sample_paths_visible and path_idx < len(self._path_visuals):
             self._teardown_path_visual(path_idx)
             self._create_path_visual(path_idx)
@@ -1049,6 +1078,8 @@ class Visualizer:
                     delete_point = menu.addAction("Delete point")
                 menu.addSeparator()
 
+            randomize_action = menu.addAction("Randomize")
+            menu.addSeparator()
             delete_path_action = menu.addAction("Delete path")
             action = menu.exec(self._tree_view.viewport().mapToGlobal(position))
 
@@ -1060,6 +1091,8 @@ class Visualizer:
                 self._insert_polyline_point(point_info[0], point_info[1], before=False)
             elif action == delete_point:
                 self._delete_polyline_point(point_info[0], point_info[1])
+            elif action == randomize_action:
+                self._randomize_path(idx)
             elif action == delete_path_action:
                 self._delete_path(idx)
 
