@@ -216,7 +216,7 @@ class Visualizer:
 
         self._loops_tree = QTreeView()
         self._loops_tree.setModel(self._loops_model)
-        self._loops_tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
+        self._loops_tree.setEditTriggers(QTreeView.EditTrigger.DoubleClicked)
         self._loops_tree.setAlternatingRowColors(True)
         self._loops_tree.header().setStretchLastSection(True)
         self._loops_tree.header().setSectionResizeMode(
@@ -331,7 +331,7 @@ class Visualizer:
             vectors = self._loop_vector_props(loop)
             for attr, display_name, vec in vectors:
                 vec_key = QStandardItem(display_name)
-                vec_val = QStandardItem("")
+                vec_val = QStandardItem(_format_vec(vec))
                 vec_key.setEditable(False)
                 vec_val.setEditable(False)
                 for ci, comp in enumerate("xyz"):
