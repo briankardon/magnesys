@@ -39,6 +39,13 @@ class CurrentLoop(ABC):
     NEAR_WIRE_THRESHOLD = 1e-6
 
     @abstractmethod
+    def characteristic_size(self):
+        """Return a characteristic length scale for this loop (e.g. radius).
+
+        Used with NEAR_WIRE_THRESHOLD to determine proximity thresholds.
+        """
+
+    @abstractmethod
     def distance_to_wire(self, x, y, z):
         """Minimum distance from point(s) to the nearest point on the wire.
 

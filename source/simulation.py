@@ -78,7 +78,7 @@ class Simulation:
         mask = np.zeros(shape, dtype=bool)
         for loop in self.loops:
             dist = loop.distance_to_wire(x, y, z)
-            threshold = getattr(loop, 'radius', loop.diameter / 2) * loop.NEAR_WIRE_THRESHOLD
+            threshold = loop.characteristic_size() * loop.NEAR_WIRE_THRESHOLD
             mask |= dist < threshold
         return mask
 

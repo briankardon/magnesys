@@ -49,6 +49,9 @@ class CircularCurrentLoop(CurrentLoop):
     def radius(self):
         return self.diameter / 2.0
 
+    def characteristic_size(self):
+        return self.radius
+
     # ------------------------------------------------------------------
     # Geometry helpers
     # ------------------------------------------------------------------
