@@ -6,18 +6,20 @@ import numpy as np
 import pyqtgraph as pg
 import pyvista as pv
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QColor, QKeySequence, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMainWindow,
     QPushButton,
     QSlider,
     QSplitter,
+    QTreeView,
     QVBoxLayout,
     QWidget,
 )
@@ -201,9 +203,30 @@ class Visualizer:
     def _build_control_panel(self):
         """Build the right-side Qt control panel."""
         panel = QWidget()
-        panel.setFixedWidth(220)
+        panel.setFixedWidth(260)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
+
+        # ---- Loops tree ----
+        loops_group = QGroupBox("Loops")
+        loops_layout = QVBoxLayout(loops_group)
+
+        self._loops_model = QStandardItemModel()
+        self._loops_model.setHorizontalHeaderLabels(["Property", "Value"])
+
+        self._loops_tree = QTreeView()
+        self._loops_tree.setModel(self._loops_model)
+        self._loops_tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
+        self._loops_tree.setAlternatingRowColors(True)
+        self._loops_tree.header().setStretchLastSection(True)
+        self._loops_tree.header().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents,
+        )
+        loops_layout.addWidget(self._loops_tree)
+
+        layout.addWidget(loops_group)
+
+        self._refresh_loops_tree()
 
         # ---- Grid resolution ----
         grid_group = QGroupBox("Grid")
@@ -262,6 +285,55 @@ class Visualizer:
         layout.addStretch()
 
         return panel
+
+    def _refresh_loops_tree(self):
+        """Rebuild the loops tree view from the current simulation."""
+        model = self._loops_model
+        model.removeRows(0, model.rowCount())
+
+        for i, loop in enumerate(self.simulation.loops):
+            color = self.LOOP_COLORS[i % len(self.LOOP_COLORS)]
+            label = f"Loop {i} ({loop.loop_type})"
+
+            root = QStandardItem(label)
+            root.setForeground(QColor(color))
+            root_val = QStandardItem("")
+            root.setEditable(False)
+            root_val.setEditable(False)
+
+            # Properties to display
+            props = self._loop_properties(loop)
+            for key, val in props:
+                key_item = QStandardItem(key)
+                val_item = QStandardItem(val)
+                key_item.setEditable(False)
+                val_item.setEditable(False)
+                root.appendRow([key_item, val_item])
+
+            model.appendRow([root, root_val])
+
+    @staticmethod
+    def _loop_properties(loop):
+        """Return a list of (key, value_str) pairs for display in the tree."""
+        props = [("Type", loop.loop_type)]
+
+        if hasattr(loop, "diameter"):
+            props.append(("Diameter", f"{loop.diameter:.4g} m"))
+        if hasattr(loop, "side_lengths"):
+            a, b = loop.side_lengths
+            props.append(("Side lengths", f"{a:.4g} x {b:.4g} m"))
+        if hasattr(loop, "corner_radius"):
+            props.append(("Corner radius", f"{loop.corner_radius:.4g} m"))
+
+        props.append(("Center", _format_vec(loop.center)))
+        props.append(("Normal", _format_vec(loop.normal)))
+
+        if hasattr(loop, "orientation"):
+            props.append(("Orientation", _format_vec(loop.orientation)))
+
+        props.append(("Current", f"{loop.current:.4g} A"))
+
+        return props
 
     # ------------------------------------------------------------------
     # 2D plot widget
@@ -410,6 +482,7 @@ class Visualizer:
         if cam is not None:
             plotter.camera_position = cam
 
+        self._refresh_loops_tree()
         self._update_window_title()
 
     def _on_file_save(self):
@@ -939,3 +1012,8 @@ class Visualizer:
         maxs = center + half_side
 
         return (mins[0], maxs[0], mins[1], maxs[1], mins[2], maxs[2])
+
+
+def _format_vec(v):
+    """Format a 3-vector for display."""
+    return f"({v[0]:.4g}, {v[1]:.4g}, {v[2]:.4g})"
