@@ -25,11 +25,14 @@ class Visualizer:
         "#d23be7",  # purple
     ]
 
+    # Panel layout constants (normalized viewport coordinates)
+    _PANEL_LEFT = 0.78   # left edge of the control panel region
+    _PANEL_RIGHT = 0.98
+
     def __init__(self, simulation):
         self.simulation = simulation
         self._plotter = None
         self._field_actor = None
-        self._scalar_bar_actor = None
 
         # State tracked for refreshing
         self._grid_extents = None
@@ -37,6 +40,11 @@ class Visualizer:
         self._field_scale = "auto"
         self._arrow_size_mode = "linear"
         self._auto_update = True
+
+        # Widget references for dynamic updates
+        self._slider_widget = None
+        self._spacing_text_actor = None
+        self._refresh_widget = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -90,7 +98,7 @@ class Visualizer:
         self._field_scale = field_scale
         self._arrow_size_mode = arrow_size_mode
 
-        plotter = pv.Plotter()
+        plotter = pv.Plotter(window_size=(1400, 900))
         plotter.set_background(background)
         self._plotter = plotter
 
@@ -109,51 +117,120 @@ class Visualizer:
     # Widgets
     # ------------------------------------------------------------------
 
+    def _compute_spacing(self, resolution):
+        """Compute the average grid spacing for a given resolution."""
+        extents = self._grid_extents or self._auto_extents()
+        x_min, x_max, y_min, y_max, z_min, z_max = extents
+        n = resolution if isinstance(resolution, int) else resolution[0]
+        spacings = []
+        for lo, hi in [(x_min, x_max), (y_min, y_max), (z_min, z_max)]:
+            span = hi - lo
+            if span > 0 and n > 1:
+                spacings.append(span / (n - 1))
+        return np.mean(spacings) if spacings else 0.0
+
+    def _format_spacing(self, spacing_m):
+        """Format a spacing value with appropriate units."""
+        if spacing_m >= 0.01:
+            return f"{spacing_m * 100:.1f} cm"
+        else:
+            return f"{spacing_m * 1000:.2f} mm"
+
     def _add_widgets(self, plotter):
-        """Add interactive controls to the plotter."""
-        # Grid resolution slider (3 to 25)
-        plotter.add_slider_widget(
+        """Add interactive controls in a right-side panel."""
+        L = self._PANEL_LEFT
+        R = self._PANEL_RIGHT
+        MID = (L + R) / 2
+
+        # ---- Panel title ----
+        plotter.add_text(
+            "Controls",
+            position=(L + 0.01, 0.94),
+            viewport=True,
+            font_size=11,
+            color="black",
+            font="courier",
+        )
+
+        # ---- Grid spacing slider ----
+        initial_res = (self._grid_resolution if isinstance(self._grid_resolution, int)
+                       else self._grid_resolution[0])
+        self._slider_widget = plotter.add_slider_widget(
             self._on_resolution_changed,
             rng=[3, 25],
-            value=self._grid_resolution if isinstance(self._grid_resolution, int)
-                  else self._grid_resolution[0],
-            title="Grid resolution",
-            pointa=(0.02, 0.92),
-            pointb=(0.28, 0.92),
+            value=initial_res,
+            title="Grid points per axis",
+            pointa=(L, 0.85),
+            pointb=(R, 0.85),
             style="modern",
             fmt="%.0f",
         )
 
-        # Auto-update checkbox
+        # Spacing readout below slider
+        spacing = self._compute_spacing(initial_res)
+        self._spacing_text_actor = plotter.add_text(
+            f"Spacing: {self._format_spacing(spacing)}",
+            position=(L + 0.01, 0.76),
+            viewport=True,
+            font_size=9,
+            color="gray",
+        )
+
+        # ---- Auto-update checkbox ----
+        # Position in pixels — estimate from viewport fraction
+        # Use a fixed pixel position in the right panel area
+        plotter.add_text(
+            "Auto-update",
+            position=(L + 0.01, 0.68),
+            viewport=True,
+            font_size=9,
+            color="black",
+        )
         plotter.add_checkbox_button_widget(
             self._on_auto_update_toggled,
             value=self._auto_update,
-            position=(10, 10),
-            size=30,
+            position=(5, 5),  # will be repositioned below
+            size=25,
             color_on="green",
             color_off="grey",
         )
+        # Reposition the checkbox to the panel area (pixel coords)
+        # Approximate: panel left in pixels ≈ _PANEL_LEFT * window_width
+        win_w, win_h = plotter.window_size
+        cb_x = int(L * win_w) + 5
+        cb_y = int(0.64 * win_h)
+        rep = plotter.button_widgets[-1].GetRepresentation()
+        rep.SetPlaceFactor(1)
+        rep.PlaceWidget((cb_x, cb_y, 0, cb_x + 25, cb_y + 25, 0))
+
+        # ---- Refresh button ----
         plotter.add_text(
-            "Auto-update",
-            position=(45, 10),
+            "Refresh",
+            position=(L + 0.01, 0.56),
+            viewport=True,
             font_size=9,
             color="black",
         )
-
-        # Manual refresh button
-        plotter.add_checkbox_button_widget(
+        self._refresh_widget = plotter.add_checkbox_button_widget(
             self._on_refresh_clicked,
             value=False,
-            position=(160, 10),
-            size=30,
+            position=(5, 5),  # repositioned below
+            size=25,
             color_on="steelblue",
             color_off="steelblue",
         )
-        plotter.add_text(
-            "Refresh",
-            position=(195, 10),
-            font_size=9,
-            color="black",
+        rb_y = int(0.52 * win_h)
+        rep = plotter.button_widgets[-1].GetRepresentation()
+        rep.SetPlaceFactor(1)
+        rep.PlaceWidget((cb_x, rb_y, 0, cb_x + 25, rb_y + 25, 0))
+
+    def _update_spacing_display(self):
+        """Update the spacing readout text."""
+        if self._spacing_text_actor is None:
+            return
+        spacing = self._compute_spacing(self._grid_resolution)
+        self._spacing_text_actor.input = (
+            f"Spacing: {self._format_spacing(spacing)}"
         )
 
     def _on_resolution_changed(self, value):
@@ -162,6 +239,7 @@ class Visualizer:
         if new_res == self._grid_resolution:
             return
         self._grid_resolution = new_res
+        self._update_spacing_display()
         if self._auto_update:
             self._refresh_field()
 
@@ -172,6 +250,9 @@ class Visualizer:
     def _on_refresh_clicked(self, _state):
         """Callback for the manual refresh button."""
         self._refresh_field()
+        # Reset to "unpressed" appearance
+        if self._refresh_widget is not None:
+            self._refresh_widget.GetRepresentation().SetState(0)
 
     # ------------------------------------------------------------------
     # Field refresh
@@ -192,7 +273,7 @@ class Visualizer:
         if not self.simulation.loops:
             return
 
-        self._field_actor, self._scalar_bar_actor = self._build_field(
+        self._field_actor = self._build_field(
             plotter, self._grid_extents, self._grid_resolution,
             self._field_scale, self._arrow_size_mode,
         )
@@ -243,10 +324,7 @@ class Visualizer:
 
     def _build_field(self, plotter, grid_extents, grid_resolution,
                      field_scale, arrow_size_mode):
-        """Compute field and add arrows to plotter.
-
-        Returns (field_actor, scalar_bar_actor) so they can be removed later.
-        """
+        """Compute field and add arrows to plotter.  Returns field_actor."""
         extents = grid_extents or self._auto_extents()
         x_min, x_max, y_min, y_max, z_min, z_max = extents
 
@@ -274,7 +352,7 @@ class Visualizer:
         magnitudes = np.linalg.norm(vectors, axis=1)
 
         if len(points) == 0:
-            return None, None
+            return None
 
         grid = pv.PolyData(points)
 
@@ -352,7 +430,7 @@ class Visualizer:
             scalar_bar_args={"title": "|B| (T)"},
         )
 
-        return field_actor, None
+        return field_actor
 
     def _auto_extents(self):
         """Compute grid extents from loop positions and sizes."""
