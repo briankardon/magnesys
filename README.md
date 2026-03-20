@@ -176,3 +176,7 @@ demos/
     *.py                         # Example scripts
     *.mag                        # Loadable project files
 ```
+
+## Credits
+
+Developed by **Brian Kardon** and **Claude** (Anthropic).
