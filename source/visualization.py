@@ -95,7 +95,7 @@ class Visualizer:
     # ------------------------------------------------------------------
 
     def _add_loops(self, plotter, line_width):
-        """Add current loop geometry to the plotter."""
+        """Add current loop geometry with current-direction arrowheads."""
         for i, loop in enumerate(self.simulation.loops):
             path = loop.get_path()
             n = len(path)
@@ -115,6 +115,22 @@ class Visualizer:
                 render_lines_as_tubes=True,
                 label=f"Loop {i}",
             )
+
+            # Arrowhead showing current direction at one point on the loop
+            idx = 0
+            tangent = path[(idx + 1) % (n - 1)] - path[idx]
+            tangent = tangent / np.linalg.norm(tangent)
+            # Size the cone relative to the loop's bounding extent
+            extent = path.max(axis=0) - path.min(axis=0)
+            cone_height = np.max(extent) * 0.08
+            cone = pv.Cone(
+                center=path[idx] + tangent * cone_height * 0.5,
+                direction=tangent,
+                height=cone_height,
+                radius=cone_height * 0.4,
+                resolution=20,
+            )
+            plotter.add_mesh(cone, color=color)
 
     def _add_field(self, plotter, grid_extents, grid_resolution, field_scale,
                    arrow_size_mode):
