@@ -302,6 +302,12 @@ class Visualizer:
                 interaction_event="end",
                 test_callback=False,
             )
+
+            # Shrink the plane widget handles
+            self._plane_widget.SetHandleSize(
+                self._plane_widget.GetHandleSize() * 0.5
+            )
+
             self._update_field()
         else:
             # Remove the plane widget
@@ -627,5 +633,11 @@ class Visualizer:
         padding = np.maximum(span * 0.5, 0.01)
         mins -= padding
         maxs += padding
+
+        # Force a cube so the 3D grid isn't stretched along one axis
+        center = (mins + maxs) / 2.0
+        half_side = np.max(maxs - mins) / 2.0
+        mins = center - half_side
+        maxs = center + half_side
 
         return (mins[0], maxs[0], mins[1], maxs[1], mins[2], maxs[2])
