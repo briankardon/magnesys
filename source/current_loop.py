@@ -33,6 +33,22 @@ class CurrentLoop(ABC):
         """
 
     @abstractmethod
+    def get_path(self, n_points=128):
+        """Return points tracing the loop path for visualization.
+
+        Parameters
+        ----------
+        n_points : int
+            Number of points along the path.
+
+        Returns
+        -------
+        path : ndarray, shape (n_points, 3)
+            Ordered 3D coordinates tracing the loop. The path should form
+            a closed curve (first point == last point).
+        """
+
+    @abstractmethod
     def to_dict(self):
         """Serialize this loop to a JSON-compatible dict."""
 

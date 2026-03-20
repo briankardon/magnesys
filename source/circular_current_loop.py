@@ -200,6 +200,22 @@ class CircularCurrentLoop(CurrentLoop):
         return R
 
     # ------------------------------------------------------------------
+    # Visualization geometry
+    # ------------------------------------------------------------------
+
+    def get_path(self, n_points=128):
+        theta = np.linspace(0, 2 * np.pi, n_points)
+        # Circle in the local frame (xy-plane)
+        local = np.column_stack([
+            self.radius * np.cos(theta),
+            self.radius * np.sin(theta),
+            np.zeros_like(theta),
+        ])
+        # Rotate to lab frame and translate
+        R = self._rotation_to_loop_frame()
+        return (local @ R.T) + self.center
+
+    # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
 
