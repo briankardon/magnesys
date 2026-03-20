@@ -289,7 +289,16 @@ class Visualizer:
     def _refresh_loops_tree(self):
         """Rebuild the loops tree view from the current simulation."""
         model = self._loops_model
+
+        # Disconnect while rebuilding to avoid spurious change signals
+        try:
+            model.itemChanged.disconnect(self._on_loop_property_changed)
+        except TypeError:
+            pass
+
         model.removeRows(0, model.rowCount())
+
+        _ROLE = Qt.ItemDataRole.UserRole
 
         for i, loop in enumerate(self.simulation.loops):
             color = self.LOOP_COLORS[i % len(self.LOOP_COLORS)]
@@ -301,39 +310,111 @@ class Visualizer:
             root.setEditable(False)
             root_val.setEditable(False)
 
-            # Properties to display
-            props = self._loop_properties(loop)
-            for key, val in props:
-                key_item = QStandardItem(key)
-                val_item = QStandardItem(val)
+            # Type (read-only)
+            key_item = QStandardItem("Type")
+            val_item = QStandardItem(loop.loop_type)
+            key_item.setEditable(False)
+            val_item.setEditable(False)
+            root.appendRow([key_item, val_item])
+
+            # Scalar properties
+            scalars = self._loop_scalar_props(loop)
+            for attr, display_name, value in scalars:
+                key_item = QStandardItem(display_name)
+                val_item = QStandardItem(f"{value:.6g}")
                 key_item.setEditable(False)
-                val_item.setEditable(False)
+                val_item.setEditable(True)
+                val_item.setData({"loop": i, "attr": attr}, _ROLE)
                 root.appendRow([key_item, val_item])
+
+            # Vector properties
+            vectors = self._loop_vector_props(loop)
+            for attr, display_name, vec in vectors:
+                vec_key = QStandardItem(display_name)
+                vec_val = QStandardItem("")
+                vec_key.setEditable(False)
+                vec_val.setEditable(False)
+                for ci, comp in enumerate("xyz"):
+                    comp_key = QStandardItem(comp)
+                    comp_val = QStandardItem(f"{vec[ci]:.6g}")
+                    comp_key.setEditable(False)
+                    comp_val.setEditable(True)
+                    comp_val.setData(
+                        {"loop": i, "attr": attr, "component": ci}, _ROLE,
+                    )
+                    vec_key.appendRow([comp_key, comp_val])
+                root.appendRow([vec_key, vec_val])
 
             model.appendRow([root, root_val])
 
-    @staticmethod
-    def _loop_properties(loop):
-        """Return a list of (key, value_str) pairs for display in the tree."""
-        props = [("Type", loop.loop_type)]
+        model.itemChanged.connect(self._on_loop_property_changed)
 
+    @staticmethod
+    def _loop_scalar_props(loop):
+        """Return [(attr_name, display_name, value), ...] for scalar properties."""
+        props = []
         if hasattr(loop, "diameter"):
-            props.append(("Diameter", f"{loop.diameter:.4g} m"))
+            props.append(("diameter", "Diameter (m)", loop.diameter))
         if hasattr(loop, "side_lengths"):
             a, b = loop.side_lengths
-            props.append(("Side lengths", f"{a:.4g} x {b:.4g} m"))
+            props.append(("side_length_a", "Side A (m)", a))
+            props.append(("side_length_b", "Side B (m)", b))
         if hasattr(loop, "corner_radius"):
-            props.append(("Corner radius", f"{loop.corner_radius:.4g} m"))
-
-        props.append(("Center", _format_vec(loop.center)))
-        props.append(("Normal", _format_vec(loop.normal)))
-
-        if hasattr(loop, "orientation"):
-            props.append(("Orientation", _format_vec(loop.orientation)))
-
-        props.append(("Current", f"{loop.current:.4g} A"))
-
+            props.append(("corner_radius", "Corner radius (m)", loop.corner_radius))
+        props.append(("current", "Current (A)", loop.current))
         return props
+
+    @staticmethod
+    def _loop_vector_props(loop):
+        """Return [(attr_name, display_name, ndarray), ...] for vector properties."""
+        props = [
+            ("center", "Center (m)", loop.center),
+            ("normal", "Normal", loop.normal),
+        ]
+        if hasattr(loop, "orientation"):
+            props.append(("orientation", "Orientation", loop.orientation))
+        return props
+
+    def _on_loop_property_changed(self, item):
+        """Handle an edit in the loops tree view."""
+        meta = item.data(Qt.ItemDataRole.UserRole)
+        if meta is None:
+            return
+
+        text = item.text().strip()
+        try:
+            value = float(text)
+        except ValueError:
+            # Revert to current value on bad input
+            self._refresh_loops_tree()
+            return
+
+        loop_idx = meta["loop"]
+        attr = meta["attr"]
+
+        if loop_idx >= len(self.simulation.loops):
+            return
+        loop = self.simulation.loops[loop_idx]
+
+        if "component" in meta:
+            # Vector component edit
+            ci = meta["component"]
+            vec = getattr(loop, attr).copy()
+            vec[ci] = value
+            setattr(loop, attr, vec)
+            # Re-normalize normal and orientation vectors
+            if attr in ("normal", "orientation"):
+                norm = np.linalg.norm(vec)
+                if norm > 0:
+                    setattr(loop, attr, vec / norm)
+        elif attr == "side_length_a":
+            loop.side_lengths = (value, loop.side_lengths[1])
+        elif attr == "side_length_b":
+            loop.side_lengths = (loop.side_lengths[0], value)
+        else:
+            setattr(loop, attr, value)
+
+        self._rebuild_scene()
 
     # ------------------------------------------------------------------
     # 2D plot widget
@@ -684,6 +765,26 @@ class Visualizer:
     # ------------------------------------------------------------------
     # Field update
     # ------------------------------------------------------------------
+
+    def _rebuild_scene(self):
+        """Rebuild 3D loop geometry, field, plot, and tree after loop edits."""
+        plotter = self._plotter
+        if plotter is None:
+            return
+
+        # Remove all loop geometry actors and rebuild
+        # (plotter.clear() would also remove plane/line widgets, so we
+        #  remove only the mesh actors by clearing and re-adding everything)
+        plotter.clear_actors()
+
+        self._field_actor = None
+        self._add_loops(plotter, self._loop_line_width)
+        self._update_field()
+
+        plotter.add_axes()
+
+        # Refresh the tree to show updated values (e.g. re-normalized normals)
+        self._refresh_loops_tree()
 
     def _update_field(self):
         """Recompute and redraw the magnetic field arrows."""
