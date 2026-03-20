@@ -2,6 +2,8 @@
 
 A Python-based magnetic field simulator with an interactive 3D visualization GUI.
 
+![Magnesys screenshot](docs/screenshot.png)
+
 ## Features
 
 ### Simulation
