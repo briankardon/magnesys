@@ -38,6 +38,7 @@ A Python-based magnetic field simulator with an interactive 3D visualization GUI
 |------|-------|-------------|------------|
 | Circular loop | `CircularCurrentLoop` | Elliptic integrals (exact) | diameter, center, normal, current |
 | Rounded rectangle | `RoundRectCurrentLoop` | Biot-Savart (numerical) | side_lengths, corner_radius, center, normal, orientation, current |
+| Infinite line | `InfiniteLineCurrent` | Analytical (exact) | center, normal, current |
 
 ## Installation
 
@@ -62,7 +63,7 @@ python magnesys.py demos/helmholtz_coil.mag
 ```
 
 In the GUI you can:
-- **Add loops** via Edit → Add loop → Circular / Rounded rectangle
+- **Add loops** via Edit → Add loop → Circular / Rounded rectangle / Infinite line
 - **Add sample paths** via Edit → Add path → Line segment / Polyline / Spline
 - **Edit properties** by double-clicking values in the Objects tree view
 - **Delete objects** by selecting one and pressing Delete (or right-click → Delete)
@@ -162,6 +163,7 @@ magnesys.py                      # CLI launcher
 source/
     current_loop.py              # Abstract base class + registry
     circular_current_loop.py     # Exact field via elliptic integrals
+    infinite_line_current.py     # Exact field for infinite straight wire
     path_based_loop.py           # Biot-Savart base for arbitrary paths
     round_rect_current_loop.py
     path.py                      # SamplePath / LineSegmentPath / PolylinePath / SplinePath
