@@ -5,11 +5,12 @@ import sys
 import numpy as np
 import pyqtgraph as pg
 import pyvista as pv
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, QObject, Qt
 from PyQt6.QtGui import QAction, QColor, QKeySequence, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -150,10 +151,12 @@ class Visualizer:
         self._slice_origin = np.array([0.0, 0.0, 0.0])
         self._plane_widget = None
 
-        # Sample path state
-        self._sample_path = None
-        self._sample_line_enabled = False
-        self._line_widget = None
+        # Sample paths state (multi-path)
+        self._sample_paths = []
+        self._sample_paths_visible = False
+        self._line_widgets = []  # parallel to _sample_paths
+        self._selected_path_index = 0
+        self._path_selector = None  # QComboBox reference
         self._plot_widget = None
         self._plot_curves = {}
 
@@ -236,10 +239,10 @@ class Visualizer:
         splitter.addWidget(plotter)
         self._plotter = plotter
 
-        self._plot_widget = self._build_plot_widget()
-        self._plot_widget.setMinimumHeight(200)
-        splitter.addWidget(self._plot_widget)
-        self._plot_widget.setVisible(False)  # hidden until sample line enabled
+        self._plot_container = self._build_plot_container()
+        self._plot_container.setMinimumHeight(200)
+        splitter.addWidget(self._plot_container)
+        self._plot_container.setVisible(False)  # hidden until sample paths enabled
 
         # Set initial splitter sizes explicitly (pixels)
         splitter.setSizes([660, 240])
@@ -272,36 +275,36 @@ class Visualizer:
     def _build_control_panel(self):
         """Build the right-side Qt control panel."""
         panel = QWidget()
-        panel.setFixedWidth(260)
+        panel.setFixedWidth(390)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        # ---- Loops tree ----
-        loops_group = QGroupBox("Loops")
-        loops_layout = QVBoxLayout(loops_group)
+        # ---- Objects tree ----
+        objects_group = QGroupBox("Objects")
+        objects_layout = QVBoxLayout(objects_group)
 
-        self._loops_model = QStandardItemModel()
-        self._loops_model.setHorizontalHeaderLabels(["Property", "Value"])
+        self._tree_model = QStandardItemModel()
+        self._tree_model.setHorizontalHeaderLabels(["Property", "Value"])
 
-        self._loops_tree = QTreeView()
-        self._loops_tree.setModel(self._loops_model)
-        self._loops_tree.setEditTriggers(QTreeView.EditTrigger.DoubleClicked)
-        self._loops_tree.setAlternatingRowColors(True)
-        self._loops_tree.setContextMenuPolicy(
+        self._tree_view = QTreeView()
+        self._tree_view.setModel(self._tree_model)
+        self._tree_view.setEditTriggers(QTreeView.EditTrigger.DoubleClicked)
+        self._tree_view.setAlternatingRowColors(True)
+        self._tree_view.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu,
         )
-        self._loops_tree.customContextMenuRequested.connect(
-            self._on_loops_tree_context_menu,
+        self._tree_view.customContextMenuRequested.connect(
+            self._on_tree_context_menu,
         )
-        self._loops_tree.header().setStretchLastSection(True)
-        self._loops_tree.header().setSectionResizeMode(
+        self._tree_view.header().setStretchLastSection(True)
+        self._tree_view.header().setSectionResizeMode(
             0, QHeaderView.ResizeMode.ResizeToContents,
         )
-        loops_layout.addWidget(self._loops_tree)
+        objects_layout.addWidget(self._tree_view)
 
-        layout.addWidget(loops_group)
+        layout.addWidget(objects_group)
 
-        self._refresh_loops_tree()
+        self._refresh_tree()
 
         # ---- Grid resolution ----
         grid_group = QGroupBox("Grid")
@@ -345,10 +348,10 @@ class Visualizer:
         self._slice_cb.toggled.connect(self._on_slice_toggled)
         opts_layout.addWidget(self._slice_cb)
 
-        self._sample_line_cb = QCheckBox("Sample line")
-        self._sample_line_cb.setChecked(self._sample_line_enabled)
-        self._sample_line_cb.toggled.connect(self._on_sample_line_toggled)
-        opts_layout.addWidget(self._sample_line_cb)
+        self._sample_paths_cb = QCheckBox("Show sample paths")
+        self._sample_paths_cb.setChecked(self._sample_paths_visible)
+        self._sample_paths_cb.toggled.connect(self._on_sample_paths_toggled)
+        opts_layout.addWidget(self._sample_paths_cb)
 
         layout.addWidget(opts_group)
 
@@ -379,35 +382,40 @@ class Visualizer:
 
         return panel
 
-    def _refresh_loops_tree(self):
-        """Rebuild the loops tree view from the current simulation."""
-        model = self._loops_model
-        tree = self._loops_tree
+    def _refresh_tree(self):
+        """Rebuild the objects tree view from the current simulation and paths."""
+        model = self._tree_model
+        tree = self._tree_view
 
         # Disconnect while rebuilding to avoid spurious change signals
         try:
-            model.itemChanged.disconnect(self._on_loop_property_changed)
+            model.itemChanged.disconnect(self._on_tree_item_changed)
         except TypeError:
             pass
 
-        # Save expanded state: set of (loop_index,) or (loop_index, prop_name)
+        # Save expanded state keyed by ("loop", i) or ("path", j) and prop name
         expanded = set()
         for row in range(model.rowCount()):
             root_idx = model.index(row, 0)
+            root_item = model.itemFromIndex(root_idx)
+            meta = root_item.data(Qt.ItemDataRole.UserRole + 1)
+            if meta is None:
+                continue
+            key = (meta["kind"], meta["index"])
             if tree.isExpanded(root_idx):
-                expanded.add((row,))
-                # Check child rows (vector properties)
-                root_item = model.itemFromIndex(root_idx)
+                expanded.add(key)
                 for child_row in range(root_item.rowCount()):
                     child_idx = model.index(child_row, 0, root_idx)
                     if tree.isExpanded(child_idx):
                         child_name = model.itemFromIndex(child_idx).text()
-                        expanded.add((row, child_name))
+                        expanded.add((*key, child_name))
 
         model.removeRows(0, model.rowCount())
 
         _ROLE = Qt.ItemDataRole.UserRole
+        _KEY_ROLE = Qt.ItemDataRole.UserRole + 1  # for expansion state
 
+        # ---- Loop rows ----
         for i, loop in enumerate(self.simulation.loops):
             color = self.LOOP_COLORS[i % len(self.LOOP_COLORS)]
             label = f"Loop {i} ({loop.loop_type})"
@@ -417,6 +425,7 @@ class Visualizer:
             root_val = QStandardItem("")
             root.setEditable(False)
             root_val.setEditable(False)
+            root.setData({"kind": "loop", "index": i}, _KEY_ROLE)
 
             # Type (read-only)
             key_item = QStandardItem("Type")
@@ -432,7 +441,7 @@ class Visualizer:
                 val_item = QStandardItem(f"{value:.6g}")
                 key_item.setEditable(False)
                 val_item.setEditable(True)
-                val_item.setData({"loop": i, "attr": attr}, _ROLE)
+                val_item.setData({"kind": "loop", "loop": i, "attr": attr}, _ROLE)
                 root.appendRow([key_item, val_item])
 
             # Vector properties
@@ -448,26 +457,68 @@ class Visualizer:
                     comp_key.setEditable(False)
                     comp_val.setEditable(True)
                     comp_val.setData(
-                        {"loop": i, "attr": attr, "component": ci}, _ROLE,
+                        {"kind": "loop", "loop": i, "attr": attr, "component": ci}, _ROLE,
                     )
                     vec_key.appendRow([comp_key, comp_val])
                 root.appendRow([vec_key, vec_val])
 
             model.appendRow([root, root_val])
 
+        # ---- Path rows ----
+        for j, sp in enumerate(self._sample_paths):
+            label = f"Path {j} ({sp.path_type})"
+
+            root = QStandardItem(label)
+            root_val = QStandardItem("")
+            root.setEditable(False)
+            root_val.setEditable(False)
+            root.setData({"kind": "path", "index": j}, _KEY_ROLE)
+
+            # Type (read-only)
+            key_item = QStandardItem("Type")
+            val_item = QStandardItem(sp.path_type)
+            key_item.setEditable(False)
+            val_item.setEditable(False)
+            root.appendRow([key_item, val_item])
+
+            # Path-specific properties
+            if hasattr(sp, "start") and hasattr(sp, "end"):
+                for attr, display_name in [("start", "Start (m)"), ("end", "End (m)")]:
+                    vec = getattr(sp, attr)
+                    vec_key = QStandardItem(display_name)
+                    vec_val = QStandardItem(_format_vec(vec))
+                    vec_key.setEditable(False)
+                    vec_val.setEditable(False)
+                    for ci, comp in enumerate("xyz"):
+                        comp_key = QStandardItem(comp)
+                        comp_val = QStandardItem(f"{vec[ci]:.6g}")
+                        comp_key.setEditable(False)
+                        comp_val.setEditable(True)
+                        comp_val.setData(
+                            {"kind": "path", "path": j, "attr": attr, "component": ci}, _ROLE,
+                        )
+                        vec_key.appendRow([comp_key, comp_val])
+                    root.appendRow([vec_key, vec_val])
+
+            model.appendRow([root, root_val])
+
         # Restore expanded state
         for row in range(model.rowCount()):
             root_idx = model.index(row, 0)
-            if (row,) in expanded:
+            root_item = model.itemFromIndex(root_idx)
+            meta = root_item.data(_KEY_ROLE)
+            if meta is None:
+                continue
+            key = (meta["kind"], meta["index"])
+            if key in expanded:
                 tree.setExpanded(root_idx, True)
-                root_item = model.itemFromIndex(root_idx)
                 for child_row in range(root_item.rowCount()):
                     child_idx = model.index(child_row, 0, root_idx)
                     child_name = model.itemFromIndex(child_idx).text()
-                    if (row, child_name) in expanded:
+                    if (*key, child_name) in expanded:
                         tree.setExpanded(child_idx, True)
 
-        model.itemChanged.connect(self._on_loop_property_changed)
+        model.itemChanged.connect(self._on_tree_item_changed)
 
     @staticmethod
     def _loop_scalar_props(loop):
@@ -495,8 +546,8 @@ class Visualizer:
             props.append(("orientation", "Orientation", loop.orientation))
         return props
 
-    def _on_loop_property_changed(self, item):
-        """Handle an edit in the loops tree view."""
+    def _on_tree_item_changed(self, item):
+        """Handle an edit in the objects tree view."""
         meta = item.data(Qt.ItemDataRole.UserRole)
         if meta is None:
             return
@@ -505,10 +556,17 @@ class Visualizer:
         try:
             value = float(text)
         except ValueError:
-            # Revert to current value on bad input
-            self._refresh_loops_tree()
+            self._refresh_tree()
             return
 
+        kind = meta.get("kind")
+        if kind == "loop":
+            self._on_loop_property_edited(meta, value)
+        elif kind == "path":
+            self._on_path_property_edited(meta, value)
+
+    def _on_loop_property_edited(self, meta, value):
+        """Apply a loop property edit from the tree."""
         loop_idx = meta["loop"]
         attr = meta["attr"]
 
@@ -517,12 +575,10 @@ class Visualizer:
         loop = self.simulation.loops[loop_idx]
 
         if "component" in meta:
-            # Vector component edit
             ci = meta["component"]
             vec = getattr(loop, attr).copy()
             vec[ci] = value
             setattr(loop, attr, vec)
-            # Re-normalize normal and orientation vectors
             if attr in ("normal", "orientation"):
                 norm = np.linalg.norm(vec)
                 if norm > 0:
@@ -536,9 +592,59 @@ class Visualizer:
 
         self._rebuild_scene()
 
+    def _on_path_property_edited(self, meta, value):
+        """Apply a path property edit from the tree."""
+        path_idx = meta["path"]
+        attr = meta["attr"]
+
+        if path_idx >= len(self._sample_paths):
+            return
+        sp = self._sample_paths[path_idx]
+
+        if "component" in meta:
+            ci = meta["component"]
+            vec = getattr(sp, attr).copy()
+            vec[ci] = value
+            setattr(sp, attr, vec)
+        else:
+            setattr(sp, attr, value)
+
+        self._sync_line_widget(path_idx)
+        self._refresh_tree()
+        if path_idx == self._selected_path_index:
+            self._update_plot()
+
     # ------------------------------------------------------------------
-    # 2D plot widget
+    # 2D plot widget with path selector
     # ------------------------------------------------------------------
+
+    def _build_plot_container(self):
+        """Build the plot area with a path selector combo overlaid."""
+        self._plot_widget = self._build_plot_widget()
+
+        # Overlay the combo box as a child of the plot widget (not in a layout)
+        self._path_selector = QComboBox(self._plot_widget)
+        self._path_selector.setMinimumWidth(120)
+        self._path_selector.currentIndexChanged.connect(self._on_path_selected)
+        self._path_selector.raise_()
+
+        # Reposition combo on resize via event filter
+        self._resize_filter = _ResizeFilter(self._reposition_path_selector)
+        self._plot_widget.installEventFilter(self._resize_filter)
+
+        self._refresh_path_selector()
+
+        return self._plot_widget
+
+    def _reposition_path_selector(self):
+        """Anchor the path selector to the upper-right corner of the plot."""
+        if self._path_selector is None or self._plot_widget is None:
+            return
+        margin = 6
+        combo = self._path_selector
+        pw = self._plot_widget
+        x = pw.width() - combo.width() - margin
+        combo.move(x, margin)
 
     def _build_plot_widget(self):
         """Build the pyqtgraph plot for B-field along the sample path."""
@@ -556,6 +662,32 @@ class Visualizer:
             self._plot_curves[name] = pw.plot([], [], pen=pen, name=name)
 
         return pw
+
+    def _refresh_path_selector(self):
+        """Rebuild the path selector combo box items."""
+        if self._path_selector is None:
+            return
+        self._path_selector.blockSignals(True)
+        self._path_selector.clear()
+        for j in range(len(self._sample_paths)):
+            self._path_selector.addItem(f"Path {j}")
+        # Clamp selected index
+        if self._sample_paths:
+            self._selected_path_index = min(
+                self._selected_path_index, len(self._sample_paths) - 1,
+            )
+            self._path_selector.setCurrentIndex(self._selected_path_index)
+        else:
+            self._selected_path_index = 0
+        self._path_selector.setEnabled(len(self._sample_paths) > 0)
+        self._path_selector.blockSignals(False)
+
+    def _on_path_selected(self, index):
+        """Callback when user selects a different path in the combo."""
+        if index < 0:
+            return
+        self._selected_path_index = index
+        self._update_plot()
 
     # ------------------------------------------------------------------
     # Menu bar
@@ -593,35 +725,44 @@ class Visualizer:
         # ---- Edit menu ----
         edit_menu = menu_bar.addMenu("&Edit")
 
-        add_menu = edit_menu.addMenu("&Add loop")
+        add_loop_menu = edit_menu.addMenu("&Add loop")
         add_circular = QAction("&Circular", window)
         add_circular.triggered.connect(self._on_add_circular_loop)
-        add_menu.addAction(add_circular)
+        add_loop_menu.addAction(add_circular)
 
         add_round_rect = QAction("&Rounded rectangle", window)
         add_round_rect.triggered.connect(self._on_add_round_rect_loop)
-        add_menu.addAction(add_round_rect)
+        add_loop_menu.addAction(add_round_rect)
+
+        add_path_menu = edit_menu.addMenu("Add &path")
+        add_line_seg = QAction("&Line segment", window)
+        add_line_seg.triggered.connect(self._on_add_line_segment_path)
+        add_path_menu.addAction(add_line_seg)
 
         edit_menu.addSeparator()
 
-        delete_action = QAction("&Delete selected loop", window)
+        delete_action = QAction("&Delete selected object", window)
         delete_action.setShortcut(QKeySequence.StandardKey.Delete)
-        delete_action.triggered.connect(self._on_delete_selected_loop)
+        delete_action.triggered.connect(self._on_delete_selected_object)
         edit_menu.addAction(delete_action)
 
     # ------------------------------------------------------------------
-    # Add / delete loops
+    # Add / delete loops and paths
     # ------------------------------------------------------------------
 
-    def _selected_loop_index(self):
-        """Return the index of the currently selected loop, or None."""
-        idx = self._loops_tree.currentIndex()
+    def _selected_item_info(self):
+        """Return ("loop", i), ("path", j), or None for the selected tree item."""
+        idx = self._tree_view.currentIndex()
         if not idx.isValid():
             return None
-        # Walk up to the top-level row (the loop root)
+        # Walk up to the top-level row
         while idx.parent().isValid():
             idx = idx.parent()
-        return idx.row()
+        item = self._tree_model.itemFromIndex(idx)
+        meta = item.data(Qt.ItemDataRole.UserRole + 1)
+        if meta is None:
+            return None
+        return (meta["kind"], meta["index"])
 
     def _on_add_circular_loop(self):
         """Add a circular loop with default parameters."""
@@ -665,26 +806,96 @@ class Visualizer:
         self.simulation.add_loop(loop)
         self._rebuild_scene()
 
-    def _on_delete_selected_loop(self):
-        """Delete the loop currently selected in the tree."""
-        loop_idx = self._selected_loop_index()
-        if loop_idx is None or loop_idx >= len(self.simulation.loops):
-            return
-        self.simulation.remove_loop(loop_idx)
-        self._rebuild_scene()
+    def _on_add_line_segment_path(self):
+        """Add a line segment path with default endpoints."""
+        extents = self._grid_extents or self._auto_extents()
+        cx = (extents[0] + extents[1]) / 2
+        cy = (extents[2] + extents[3]) / 2
+        cz = (extents[4] + extents[5]) / 2
+        span = (extents[1] - extents[0]) * 0.4
 
-    def _on_loops_tree_context_menu(self, position):
-        """Right-click context menu on the loops tree."""
-        loop_idx = self._selected_loop_index()
-        if loop_idx is None:
+        path = LineSegmentPath(
+            start=[cx - span, cy, cz],
+            end=[cx + span, cy, cz],
+        )
+        self._sample_paths.append(path)
+
+        # If paths are visible, create a widget for the new path immediately
+        if self._sample_paths_visible:
+            self._create_line_widget(len(self._sample_paths) - 1)
+
+        self._refresh_tree()
+        self._refresh_path_selector()
+        self._update_plot()
+
+    def _on_delete_selected_object(self):
+        """Delete the object currently selected in the tree."""
+        info = self._selected_item_info()
+        if info is None:
+            return
+        kind, idx = info
+        if kind == "loop":
+            if idx < len(self.simulation.loops):
+                self.simulation.remove_loop(idx)
+                self._rebuild_scene()
+        elif kind == "path":
+            self._delete_path(idx)
+
+    def _delete_path(self, path_idx):
+        """Remove a path by index, tearing down its widget."""
+        if path_idx >= len(self._sample_paths):
+            return
+
+        # Tear down widget
+        if path_idx < len(self._line_widgets) and self._line_widgets[path_idx] is not None:
+            w = self._line_widgets[path_idx]
+            w.Off()
+            if w in self._plotter.line_widgets:
+                self._plotter.line_widgets.remove(w)
+
+        # Remove from lists
+        self._sample_paths.pop(path_idx)
+        if path_idx < len(self._line_widgets):
+            self._line_widgets.pop(path_idx)
+
+        # Rebuild all widget callbacks since indices shifted
+        if self._sample_paths_visible:
+            self._rebuild_all_line_widgets()
+
+        # Clamp selected index
+        if self._sample_paths:
+            self._selected_path_index = min(
+                self._selected_path_index, len(self._sample_paths) - 1,
+            )
+        else:
+            self._selected_path_index = 0
+
+        self._refresh_tree()
+        self._refresh_path_selector()
+        self._update_plot()
+
+    def _on_tree_context_menu(self, position):
+        """Right-click context menu on the objects tree."""
+        info = self._selected_item_info()
+        if info is None:
             return
 
         from PyQt6.QtWidgets import QMenu
-        menu = QMenu(self._loops_tree)
-        delete_action = menu.addAction("Delete loop")
-        action = menu.exec(self._loops_tree.viewport().mapToGlobal(position))
-        if action == delete_action:
-            self._on_delete_selected_loop()
+        kind, idx = info
+        menu = QMenu(self._tree_view)
+
+        if kind == "loop":
+            delete_action = menu.addAction("Delete loop")
+            action = menu.exec(self._tree_view.viewport().mapToGlobal(position))
+            if action == delete_action:
+                if idx < len(self.simulation.loops):
+                    self.simulation.remove_loop(idx)
+                    self._rebuild_scene()
+        elif kind == "path":
+            delete_action = menu.addAction("Delete path")
+            action = menu.exec(self._tree_view.viewport().mapToGlobal(position))
+            if action == delete_action:
+                self._delete_path(idx)
 
     # ------------------------------------------------------------------
     # Project save / load
@@ -700,7 +911,8 @@ class Visualizer:
             "slice_enabled": self._slice_enabled,
             "slice_normal": self._slice_normal.tolist(),
             "slice_origin": self._slice_origin.tolist(),
-            "sample_line_enabled": self._sample_line_enabled,
+            "sample_paths_visible": self._sample_paths_visible,
+            "selected_path_index": self._selected_path_index,
         }
 
         if self._plotter is not None:
@@ -736,8 +948,15 @@ class Visualizer:
         slice_enabled = settings.get("slice_enabled", False)
         self._slice_cb.setChecked(slice_enabled)
 
-        sample_line_enabled = settings.get("sample_line_enabled", False)
-        self._sample_line_cb.setChecked(sample_line_enabled)
+        # Restore selected path index before toggling visibility
+        self._selected_path_index = settings.get("selected_path_index", 0)
+
+        # Support both new key and old key for backward compatibility
+        paths_visible = settings.get(
+            "sample_paths_visible",
+            settings.get("sample_line_enabled", False),
+        )
+        self._sample_paths_cb.setChecked(paths_visible)
 
         cam = settings.get("camera_position")
         if cam is not None and self._plotter is not None:
@@ -765,11 +984,11 @@ class Visualizer:
         if not path:
             return
 
-        simulation, viz_settings, sample_path = project.load(path)
+        simulation, viz_settings, sample_paths = project.load(path)
         self._project_path = path
 
         self.simulation = simulation
-        self._sample_path = sample_path
+        self._sample_paths = sample_paths
 
         plotter = self._plotter
         plotter.clear()
@@ -778,8 +997,11 @@ class Visualizer:
         self._loop_actors.clear()
         self._plane_widget = None
         self._slice_enabled = False
-        self._line_widget = None
-        self._sample_line_enabled = False
+
+        # Tear down all line widgets
+        self._teardown_all_line_widgets()
+        self._sample_paths_visible = False
+
         self._add_loops(plotter, self._loop_line_width)
         self._apply_viz_settings(viz_settings)
         self._update_field()
@@ -791,7 +1013,8 @@ class Visualizer:
         if cam is not None:
             plotter.camera_position = cam
 
-        self._refresh_loops_tree()
+        self._refresh_tree()
+        self._refresh_path_selector()
         self._update_window_title()
 
     def _on_file_save(self):
@@ -801,7 +1024,7 @@ class Visualizer:
                 self._project_path,
                 self.simulation,
                 self._viz_settings_to_dict(),
-                sample_path=self._sample_path,
+                sample_paths=self._sample_paths,
             )
         else:
             self._on_file_save_as()
@@ -823,21 +1046,22 @@ class Visualizer:
         self._project_path = path
         project.save(
             path, self.simulation, self._viz_settings_to_dict(),
-            sample_path=self._sample_path,
+            sample_paths=self._sample_paths,
         )
         self._update_window_title()
 
     def _on_export_field_along_path(self):
         """Export → Export field along path callback."""
-        if self._sample_path is None:
+        if not self._sample_paths:
             QMessageBox.information(
                 self._window,
                 "No sample path",
-                "Enable the sample line first (Options → Sample line).",
+                "Add a sample path first (Edit \u2192 Add path).",
             )
             return
 
-        path_length = self._sample_path.length
+        sp = self._sample_paths[self._selected_path_index]
+        path_length = sp.length
 
         dlg = ExportFieldAlongPathDialog(path_length, parent=self._window)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -858,7 +1082,7 @@ class Visualizer:
             csv_path += ".csv"
 
         # Compute field
-        points = self._sample_path.get_points(n_points)
+        points = sp.get_points(n_points)
         x, y, z = points[:, 0], points[:, 1], points[:, 2]
         Bx, By, Bz = self.simulation.magnetic_field_at(x, y, z)
         Bx = np.asarray(Bx).ravel()
@@ -997,67 +1221,100 @@ class Visualizer:
         if self._auto_update:
             self._update_field()
 
-    def _on_sample_line_toggled(self, checked):
-        """Callback for the sample line checkbox."""
-        self._sample_line_enabled = checked
+    # ------------------------------------------------------------------
+    # Sample path line widgets
+    # ------------------------------------------------------------------
+
+    def _on_sample_paths_toggled(self, checked):
+        """Callback for the Show sample paths checkbox."""
+        self._sample_paths_visible = checked
         plotter = self._plotter
         if plotter is None:
             return
 
-        if self._sample_line_enabled:
-            # Default line endpoints: span the center of the bounding box
-            extents = self._grid_extents or self._auto_extents()
-            if self._sample_path is None:
-                cx = (extents[0] + extents[1]) / 2
-                cy = (extents[2] + extents[3]) / 2
-                cz = (extents[4] + extents[5]) / 2
-                span = (extents[1] - extents[0]) * 0.4
-                self._sample_path = LineSegmentPath(
-                    start=[cx - span, cy, cz],
-                    end=[cx + span, cy, cz],
-                )
-
-            self._line_widget = plotter.add_line_widget(
-                self._on_line_moved,
-                bounds=list(extents),
-                factor=1.0,
-                resolution=1,
-                color="black",
-                interaction_event="end",
-            )
-            # Set to current path endpoints
-            self._line_widget.SetPoint1(self._sample_path.start.tolist())
-            self._line_widget.SetPoint2(self._sample_path.end.tolist())
-            self._line_widget.SetHandleSize(
-                self._line_widget.GetHandleSize() * 0.5
-            )
-
-            # Style the handles and selection highlight
-            self._line_widget.GetHandleProperty().SetColor(0.2, 0.2, 0.2)
-            self._line_widget.GetSelectedHandleProperty().SetColor(1.0, 0.0, 0.0)
-            self._line_widget.GetSelectedLineProperty().SetColor(0.2, 0.2, 0.2)
-
-            # Disable bounds clamping to hide the bounding box outline
-            self._line_widget.ClampToBoundsOff()
-
-            self._plot_widget.setVisible(True)
+        if self._sample_paths_visible:
+            self._rebuild_all_line_widgets()
+            self._plot_container.setVisible(True)
+            self._refresh_path_selector()
             self._update_plot()
         else:
-            if self._line_widget is not None:
-                self._line_widget.Off()
-                if self._line_widget in plotter.line_widgets:
-                    plotter.line_widgets.remove(self._line_widget)
-                self._line_widget = None
-            self._plot_widget.setVisible(False)
+            self._teardown_all_line_widgets()
+            self._plot_container.setVisible(False)
 
-    def _on_line_moved(self, polydata):
-        """Callback when the sample line widget is dragged."""
+    def _create_line_widget(self, path_idx):
+        """Create a line widget for the path at path_idx."""
+        plotter = self._plotter
+        if plotter is None:
+            return
+        sp = self._sample_paths[path_idx]
+        extents = self._grid_extents or self._auto_extents()
+
+        def on_moved(polydata, idx=path_idx):
+            self._on_line_moved(idx, polydata)
+
+        widget = plotter.add_line_widget(
+            on_moved,
+            bounds=list(extents),
+            factor=1.0,
+            resolution=1,
+            color="black",
+            interaction_event="end",
+        )
+
+        if hasattr(sp, "start") and hasattr(sp, "end"):
+            widget.SetPoint1(sp.start.tolist())
+            widget.SetPoint2(sp.end.tolist())
+
+        widget.SetHandleSize(widget.GetHandleSize() * 0.5)
+        widget.GetHandleProperty().SetColor(0.2, 0.2, 0.2)
+        widget.GetSelectedHandleProperty().SetColor(1.0, 0.0, 0.0)
+        widget.GetSelectedLineProperty().SetColor(0.2, 0.2, 0.2)
+        widget.ClampToBoundsOff()
+
+        # Ensure _line_widgets list is long enough
+        while len(self._line_widgets) <= path_idx:
+            self._line_widgets.append(None)
+        self._line_widgets[path_idx] = widget
+
+    def _rebuild_all_line_widgets(self):
+        """Tear down and recreate all line widgets (e.g. after index shift)."""
+        self._teardown_all_line_widgets()
+        for i in range(len(self._sample_paths)):
+            self._create_line_widget(i)
+
+    def _teardown_all_line_widgets(self):
+        """Remove all line widgets from the plotter."""
+        plotter = self._plotter
+        for w in self._line_widgets:
+            if w is not None:
+                w.Off()
+                if plotter is not None and w in plotter.line_widgets:
+                    plotter.line_widgets.remove(w)
+        self._line_widgets.clear()
+
+    def _sync_line_widget(self, path_idx):
+        """Push path start/end to the line widget at path_idx."""
+        if path_idx >= len(self._line_widgets):
+            return
+        w = self._line_widgets[path_idx]
+        if w is None:
+            return
+        sp = self._sample_paths[path_idx]
+        if hasattr(sp, "start") and hasattr(sp, "end"):
+            w.SetPoint1(sp.start.tolist())
+            w.SetPoint2(sp.end.tolist())
+            if self._plotter is not None:
+                self._plotter.render()
+
+    def _on_line_moved(self, path_index, polydata):
+        """Callback when a sample line widget is dragged."""
         pts = np.array(polydata.points)
-        if len(pts) >= 2:
-            self._sample_path = LineSegmentPath(
+        if len(pts) >= 2 and path_index < len(self._sample_paths):
+            self._sample_paths[path_index] = LineSegmentPath(
                 start=pts[0], end=pts[-1],
             )
-            if self._auto_update:
+            self._refresh_tree()
+            if path_index == self._selected_path_index and self._auto_update:
                 self._update_plot()
 
     # ------------------------------------------------------------------
@@ -1079,7 +1336,7 @@ class Visualizer:
         self._update_field()
 
         # Refresh the tree to show updated values (e.g. re-normalized normals)
-        self._refresh_loops_tree()
+        self._refresh_tree()
 
     def _update_field(self):
         """Recompute and redraw the magnetic field arrows."""
@@ -1110,21 +1367,27 @@ class Visualizer:
         plotter.render()
 
         # Also refresh the line plot if active
-        if self._sample_line_enabled:
+        if self._sample_paths_visible:
             self._update_plot()
 
     def _update_plot(self):
-        """Recompute B along the sample path and update the 2D plot."""
+        """Recompute B along the selected sample path and update the 2D plot."""
         if not self._plot_curves:
             return
-        if self._sample_path is None or not self.simulation.loops:
+
+        sp = None
+        if (self._sample_paths
+                and 0 <= self._selected_path_index < len(self._sample_paths)):
+            sp = self._sample_paths[self._selected_path_index]
+
+        if sp is None or not self.simulation.loops:
             for curve in self._plot_curves.values():
                 curve.setData([], [])
             return
 
         n = self.N_PATH_SAMPLES
-        points = self._sample_path.get_points(n)
-        distances = self._sample_path.get_distances(n)
+        points = sp.get_points(n)
+        distances = sp.get_distances(n)
 
         x, y, z = points[:, 0], points[:, 1], points[:, 2]
         Bx, By, Bz = self.simulation.magnetic_field_at(x, y, z)
@@ -1410,6 +1673,19 @@ class Visualizer:
         maxs = center + half_side
 
         return (mins[0], maxs[0], mins[1], maxs[1], mins[2], maxs[2])
+
+
+class _ResizeFilter(QObject):
+    """Event filter that calls a callback on resize events."""
+
+    def __init__(self, callback):
+        super().__init__()
+        self._callback = callback
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Resize:
+            self._callback()
+        return False
 
 
 def _format_vec(v):

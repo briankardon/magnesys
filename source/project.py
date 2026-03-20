@@ -6,10 +6,10 @@ from .path import SamplePath
 from .simulation import Simulation
 
 MAG_FILE_FILTER = "Magnesys project (*.mag)"
-CURRENT_VERSION = 2
+CURRENT_VERSION = 3
 
 
-def save(path, simulation, viz_settings=None, sample_path=None):
+def save(path, simulation, viz_settings=None, sample_paths=None):
     """Save a simulation and optional visualization settings to a .mag file.
 
     Parameters
@@ -20,8 +20,8 @@ def save(path, simulation, viz_settings=None, sample_path=None):
         The simulation to serialize.
     viz_settings : dict, optional
         Visualization state (grid resolution, camera, slice plane, etc.).
-    sample_path : SamplePath, optional
-        A sample path to serialize alongside the simulation.
+    sample_paths : list of SamplePath, optional
+        Sample paths to serialize alongside the simulation.
     """
     data = {
         "magnesys_version": CURRENT_VERSION,
@@ -29,8 +29,8 @@ def save(path, simulation, viz_settings=None, sample_path=None):
     }
     if viz_settings is not None:
         data["visualization"] = viz_settings
-    if sample_path is not None:
-        data["sample_path"] = sample_path.to_dict()
+    if sample_paths:
+        data["sample_paths"] = [p.to_dict() for p in sample_paths]
 
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
@@ -39,8 +39,8 @@ def save(path, simulation, viz_settings=None, sample_path=None):
 def load(path):
     """Load a simulation and visualization settings from a .mag or JSON file.
 
-    Handles both v1 (flat loop list) and v2 (simulation + visualization)
-    formats gracefully.
+    Handles v1 (flat loop list), v2 (simulation + single sample_path), and
+    v3 (simulation + sample_paths list) formats gracefully.
 
     Parameters
     ----------
@@ -53,8 +53,8 @@ def load(path):
         The loaded simulation.
     viz_settings : dict
         Visualization settings (empty dict if not present in the file).
-    sample_path : SamplePath or None
-        The sample path, if one was saved.
+    sample_paths : list of SamplePath
+        The sample paths (empty list if none were saved).
     """
     with open(path, "r") as f:
         data = json.load(f)
@@ -62,8 +62,14 @@ def load(path):
     simulation = Simulation.from_dict(data)
     viz_settings = data.get("visualization", {})
 
-    sample_path = None
-    if "sample_path" in data:
-        sample_path = SamplePath.create_from_dict(data["sample_path"])
+    sample_paths = []
+    if "sample_paths" in data:
+        # v3: list of paths
+        sample_paths = [
+            SamplePath.create_from_dict(d) for d in data["sample_paths"]
+        ]
+    elif "sample_path" in data:
+        # v2: single path → wrap in list
+        sample_paths = [SamplePath.create_from_dict(data["sample_path"])]
 
-    return simulation, viz_settings, sample_path
+    return simulation, viz_settings, sample_paths

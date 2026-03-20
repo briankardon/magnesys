@@ -20,10 +20,10 @@ def main():
     args = parser.parse_args()
 
     if args.file:
-        sim, viz_settings, sample_path = project.load(args.file)
+        sim, viz_settings, sample_paths = project.load(args.file)
         vis = Visualizer(sim)
         vis._project_path = args.file
-        vis._sample_path = sample_path
+        vis._sample_paths = sample_paths
         vis.show(**_viz_show_kwargs(viz_settings))
     else:
         vis = Visualizer(Simulation())
