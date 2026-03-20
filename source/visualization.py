@@ -755,6 +755,8 @@ class Visualizer:
         pw.setLabel("left", "B", units="T")
         pw.addLegend(offset=(60, 10))
         pw.showGrid(x=True, y=True, alpha=0.3)
+        pw.setMouseEnabled(x=False, y=True)
+        pw.sigYRangeChanged.connect(self._on_plot_y_range_changed)
 
         for name, color in self._PLOT_COLORS.items():
             pen = pg.mkPen(color=color, width=2,
@@ -797,6 +799,11 @@ class Visualizer:
             return
         self._selected_path_index = index
         self._update_plot()
+
+    def _on_plot_y_range_changed(self, _pw, yrange):
+        """Callback when the plot y-range changes (including manual zoom)."""
+        if not self._auto_scale:
+            self._locked_yrange = tuple(yrange)
 
     def _on_plot_mode_changed(self, mode):
         """Callback when the plot mode radio button is toggled."""
