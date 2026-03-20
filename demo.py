@@ -20,4 +20,10 @@ sim = Simulation([
 ])
 
 vis = Visualizer(sim)
-vis.show(grid_resolution=8)
+
+# Try different arrow size modes:
+#   "linear"  - arrow length proportional to |B| (can be dominated by strong fields)
+#   "uniform" - all arrows same size, magnitude shown by color only
+#   "log"     - arrow length proportional to log(|B|), compresses dynamic range
+# Use field_scale to adjust overall arrow size (float, or "auto")
+vis.show(grid_resolution=8, arrow_size_mode="uniform")

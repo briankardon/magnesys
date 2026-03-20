@@ -37,6 +37,7 @@ class Visualizer:
         grid_extents=None,
         grid_resolution=10,
         field_scale="auto",
+        arrow_size_mode="linear",
         loop_line_width=3.0,
         show_field=True,
         show_loops=True,
@@ -55,7 +56,16 @@ class Visualizer:
             same resolution for all three axes.
         field_scale : float or "auto"
             Scaling factor for quiver arrows. "auto" normalizes so arrows
-            are a reasonable size relative to the grid spacing.
+            are a reasonable size relative to the grid spacing. When
+            arrow_size_mode is "uniform", this controls the fixed arrow
+            size (default "auto" gives half a grid cell).
+        arrow_size_mode : str
+            How arrow size encodes field magnitude. Color always encodes
+            magnitude regardless of this setting.
+            - "linear": arrow length proportional to |B| (default)
+            - "uniform": all arrows the same size
+            - "log": arrow length proportional to log(|B|), compressing
+              the dynamic range so weak and strong fields are both visible
         loop_line_width : float
             Line width for rendering current loops.
         show_field : bool
@@ -73,7 +83,8 @@ class Visualizer:
 
         if show_field and self.simulation.loops:
             self._add_field(
-                plotter, grid_extents, grid_resolution, field_scale
+                plotter, grid_extents, grid_resolution, field_scale,
+                arrow_size_mode,
             )
 
         plotter.add_axes()
@@ -105,7 +116,8 @@ class Visualizer:
                 label=f"Loop {i}",
             )
 
-    def _add_field(self, plotter, grid_extents, grid_resolution, field_scale):
+    def _add_field(self, plotter, grid_extents, grid_resolution, field_scale,
+                   arrow_size_mode):
         """Add the magnetic field quiver plot to the plotter."""
         extents = grid_extents or self._auto_extents()
         x_min, x_max, y_min, y_max, z_min, z_max = extents
@@ -127,21 +139,74 @@ class Visualizer:
         vectors = np.column_stack([Bx.ravel(), By.ravel(), Bz.ravel()])
         magnitudes = np.linalg.norm(vectors, axis=1)
 
-        grid["B"] = vectors
+        # Color always shows the true magnitude
         grid["magnitude"] = magnitudes
 
-        if field_scale == "auto":
-            # Scale arrows so the median arrow is ~half a grid cell
-            spacing = np.array([
-                (x_max - x_min) / max(nx - 1, 1),
-                (y_max - y_min) / max(ny - 1, 1),
-                (z_max - z_min) / max(nz - 1, 1),
-            ])
-            cell_size = np.mean(spacing[spacing > 0])
-            median_mag = np.median(magnitudes[magnitudes > 0]) if np.any(magnitudes > 0) else 1.0
-            field_scale = 0.5 * cell_size / median_mag
+        # Compute the target cell size for auto-scaling
+        spacing = np.array([
+            (x_max - x_min) / max(nx - 1, 1),
+            (y_max - y_min) / max(ny - 1, 1),
+            (z_max - z_min) / max(nz - 1, 1),
+        ])
+        cell_size = np.mean(spacing[spacing > 0])
 
-        arrows = grid.glyph(orient="B", scale="magnitude", factor=field_scale)
+        if arrow_size_mode == "uniform":
+            # All arrows same size — direction only, magnitude shown by color
+            # Normalize vectors to unit length
+            safe_mag = np.where(magnitudes > 0, magnitudes, 1.0)
+            unit_vectors = vectors / safe_mag[:, np.newaxis]
+            grid["B"] = unit_vectors
+            grid["scale"] = np.ones(len(magnitudes))
+
+            if field_scale == "auto":
+                field_scale = 0.4 * cell_size
+
+            arrows = grid.glyph(
+                orient="B", scale="scale", factor=field_scale,
+            )
+
+        elif arrow_size_mode == "log":
+            # Arrow length proportional to log(|B|), compressing dynamic range
+            # Use log10(|B| / B_min) + 1 so the smallest nonzero arrow has
+            # length 1 unit and larger ones are compressed
+            nonzero = magnitudes > 0
+            if np.any(nonzero):
+                min_mag = magnitudes[nonzero].min()
+                log_scale = np.where(
+                    nonzero,
+                    np.log10(magnitudes / min_mag) + 1.0,
+                    0.0,
+                )
+            else:
+                log_scale = np.zeros_like(magnitudes)
+
+            # Normalize vectors to unit length, then scale by log_scale
+            safe_mag = np.where(magnitudes > 0, magnitudes, 1.0)
+            unit_vectors = vectors / safe_mag[:, np.newaxis]
+            grid["B"] = unit_vectors
+            grid["scale"] = log_scale
+
+            if field_scale == "auto":
+                median_log = np.median(log_scale[log_scale > 0]) if np.any(log_scale > 0) else 1.0
+                field_scale = 0.5 * cell_size / median_log
+
+            arrows = grid.glyph(
+                orient="B", scale="scale", factor=field_scale,
+            )
+
+        else:
+            # Linear (default): arrow length proportional to |B|
+            grid["B"] = vectors
+            grid["scale"] = magnitudes
+
+            if field_scale == "auto":
+                median_mag = np.median(magnitudes[magnitudes > 0]) if np.any(magnitudes > 0) else 1.0
+                field_scale = 0.5 * cell_size / median_mag
+
+            arrows = grid.glyph(
+                orient="B", scale="scale", factor=field_scale,
+            )
+
         plotter.add_mesh(
             arrows,
             scalars="magnitude",
