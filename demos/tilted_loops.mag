@@ -1,0 +1,56 @@
+{
+  "magnesys_version": 2,
+  "simulation": {
+    "loops": [
+      {
+        "loop_type": "circular",
+        "diameter": 0.12,
+        "center": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "normal": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "current": 1.0
+      },
+      {
+        "loop_type": "circular",
+        "diameter": 0.12,
+        "center": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "normal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "current": 1.0
+      },
+      {
+        "loop_type": "circular",
+        "diameter": 0.12,
+        "center": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "normal": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "current": 1.0
+      }
+    ]
+  },
+  "visualization": {
+    "grid_resolution": 8,
+    "arrow_size_mode": "uniform"
+  }
+}

@@ -1,0 +1,155 @@
+{
+  "magnesys_version": 2,
+  "simulation": {
+    "loops": [
+      {
+        "loop_type": "round_rect",
+        "side_lengths": [
+          0.12,
+          0.08
+        ],
+        "corner_radius": 0.005,
+        "center": [
+          0.0,
+          0.0,
+          0.06
+        ],
+        "normal": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "orientation": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "current": 0.2
+      },
+      {
+        "loop_type": "round_rect",
+        "side_lengths": [
+          0.12,
+          0.08
+        ],
+        "corner_radius": 0.005,
+        "center": [
+          0.0,
+          0.0,
+          -0.06
+        ],
+        "normal": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "orientation": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "current": 0.2
+      },
+      {
+        "loop_type": "round_rect",
+        "side_lengths": [
+          0.12,
+          0.08
+        ],
+        "corner_radius": 0.005,
+        "center": [
+          0.06,
+          0.0,
+          0.0
+        ],
+        "normal": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "orientation": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "current": 0.2
+      },
+      {
+        "loop_type": "round_rect",
+        "side_lengths": [
+          0.12,
+          0.08
+        ],
+        "corner_radius": 0.005,
+        "center": [
+          -0.06,
+          0.0,
+          0.0
+        ],
+        "normal": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "orientation": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "current": 0.2
+      },
+      {
+        "loop_type": "round_rect",
+        "side_lengths": [
+          0.12,
+          0.08
+        ],
+        "corner_radius": 0.005,
+        "center": [
+          0.0,
+          0.06,
+          0.0
+        ],
+        "normal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "orientation": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "current": 0.2
+      },
+      {
+        "loop_type": "round_rect",
+        "side_lengths": [
+          0.12,
+          0.08
+        ],
+        "corner_radius": 0.005,
+        "center": [
+          0.0,
+          -0.06,
+          0.0
+        ],
+        "normal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "orientation": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "current": 0.2
+      }
+    ]
+  },
+  "visualization": {
+    "grid_resolution": 8,
+    "arrow_size_mode": "uniform"
+  }
+}
