@@ -123,3 +123,71 @@ class LineSegmentPath(SamplePath):
             f"LineSegmentPath(start={self.start.tolist()}, "
             f"end={self.end.tolist()})"
         )
+
+
+@SamplePath.register
+class PolylinePath(SamplePath):
+    """A piecewise-linear path through a sequence of waypoints.
+
+    Parameters
+    ----------
+    points : array_like, shape (N, 3)
+        Waypoint positions [x, y, z] in meters.  Must have N >= 2.
+    """
+
+    path_type = "polyline"
+
+    def __init__(self, points):
+        self.points = np.asarray(points, dtype=float)
+        if self.points.ndim != 2 or self.points.shape[1] != 3:
+            raise ValueError("points must have shape (N, 3)")
+        if len(self.points) < 2:
+            raise ValueError("polyline must have at least 2 points")
+
+    @property
+    def segment_lengths(self):
+        """Length of each segment between consecutive waypoints."""
+        return np.linalg.norm(np.diff(self.points, axis=0), axis=1)
+
+    @property
+    def length(self):
+        return float(self.segment_lengths.sum())
+
+    def get_points(self, n):
+        seg_lens = self.segment_lengths
+        cumulative = np.concatenate([[0.0], np.cumsum(seg_lens)])
+        total = cumulative[-1]
+        if total == 0:
+            return np.tile(self.points[0], (n, 1))
+
+        targets = np.linspace(0, total, n)
+        seg_idx = np.searchsorted(cumulative, targets, side="right") - 1
+        seg_idx = np.clip(seg_idx, 0, len(seg_lens) - 1)
+
+        seg_start_d = cumulative[seg_idx]
+        safe_lens = np.where(seg_lens[seg_idx] > 0, seg_lens[seg_idx], 1.0)
+        t = np.where(
+            seg_lens[seg_idx] > 0,
+            (targets - seg_start_d) / safe_lens,
+            0.0,
+        )
+
+        starts = self.points[seg_idx]
+        ends = self.points[seg_idx + 1]
+        return starts + t[:, np.newaxis] * (ends - starts)
+
+    def get_distances(self, n):
+        return np.linspace(0, self.length, n)
+
+    def to_dict(self):
+        return {
+            "path_type": self.path_type,
+            "points": self.points.tolist(),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(points=data["points"])
+
+    def __repr__(self):
+        return f"PolylinePath({len(self.points)} points, length={self.length:.4g} m)"

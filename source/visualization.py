@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 from pyvistaqt import QtInteractor
 
 from . import project
-from .path import LineSegmentPath
+from .path import LineSegmentPath, PolylinePath
 
 
 class ExportFieldAlongPathDialog(QDialog):
@@ -154,7 +154,7 @@ class Visualizer:
         # Sample paths state (multi-path)
         self._sample_paths = []
         self._sample_paths_visible = False
-        self._line_widgets = []  # parallel to _sample_paths
+        self._path_visuals = []  # parallel to _sample_paths; dicts or None
         self._selected_path_index = 0
         self._path_selector = None  # QComboBox reference
         self._plot_widget = None
@@ -482,7 +482,27 @@ class Visualizer:
             root.appendRow([key_item, val_item])
 
             # Path-specific properties
-            if hasattr(sp, "start") and hasattr(sp, "end"):
+            if isinstance(sp, PolylinePath):
+                for k, pt in enumerate(sp.points):
+                    pt_key = QStandardItem(f"Point {k} (m)")
+                    pt_val = QStandardItem(_format_vec(pt))
+                    pt_key.setEditable(False)
+                    pt_val.setEditable(False)
+                    pt_key.setData(
+                        {"kind": "path_point", "path": j, "point_index": k}, _ROLE,
+                    )
+                    for ci, comp in enumerate("xyz"):
+                        comp_key = QStandardItem(comp)
+                        comp_val = QStandardItem(f"{pt[ci]:.6g}")
+                        comp_key.setEditable(False)
+                        comp_val.setEditable(True)
+                        comp_val.setData(
+                            {"kind": "path", "path": j, "attr": "points",
+                             "point_index": k, "component": ci}, _ROLE,
+                        )
+                        pt_key.appendRow([comp_key, comp_val])
+                    root.appendRow([pt_key, pt_val])
+            elif hasattr(sp, "start") and hasattr(sp, "end"):
                 for attr, display_name in [("start", "Start (m)"), ("end", "End (m)")]:
                     vec = getattr(sp, attr)
                     vec_key = QStandardItem(display_name)
@@ -601,7 +621,12 @@ class Visualizer:
             return
         sp = self._sample_paths[path_idx]
 
-        if "component" in meta:
+        if attr == "points" and "point_index" in meta:
+            # Polyline waypoint edit
+            k = meta["point_index"]
+            ci = meta["component"]
+            sp.points[k, ci] = value
+        elif "component" in meta:
             ci = meta["component"]
             vec = getattr(sp, attr).copy()
             vec[ci] = value
@@ -609,7 +634,7 @@ class Visualizer:
         else:
             setattr(sp, attr, value)
 
-        self._sync_line_widget(path_idx)
+        self._sync_path_visual(path_idx)
         self._refresh_tree()
         if path_idx == self._selected_path_index:
             self._update_plot()
@@ -660,6 +685,14 @@ class Visualizer:
                            style=Qt.PenStyle.DashLine if name == "|B|"
                            else Qt.PenStyle.SolidLine)
             self._plot_curves[name] = pw.plot([], [], pen=pen, name=name)
+
+        # Waypoint markers (shown for polyline paths)
+        self._waypoint_markers = pw.plot(
+            [], [], pen=None,
+            symbol="o", symbolSize=7,
+            symbolBrush=pg.mkBrush(0, 0, 0),
+            symbolPen=pg.mkPen(0, 0, 0, width=1),
+        )
 
         return pw
 
@@ -738,6 +771,10 @@ class Visualizer:
         add_line_seg = QAction("&Line segment", window)
         add_line_seg.triggered.connect(self._on_add_line_segment_path)
         add_path_menu.addAction(add_line_seg)
+
+        add_polyline = QAction("&Polyline", window)
+        add_polyline.triggered.connect(self._on_add_polyline_path)
+        add_path_menu.addAction(add_polyline)
 
         edit_menu.addSeparator()
 
@@ -818,15 +855,85 @@ class Visualizer:
             start=[cx - span, cy, cz],
             end=[cx + span, cy, cz],
         )
+        self._add_path(path)
+
+    def _on_add_polyline_path(self):
+        """Add a polyline path with 3 default waypoints."""
+        extents = self._grid_extents or self._auto_extents()
+        cx = (extents[0] + extents[1]) / 2
+        cy = (extents[2] + extents[3]) / 2
+        cz = (extents[4] + extents[5]) / 2
+        span = (extents[1] - extents[0]) * 0.4
+
+        path = PolylinePath(points=[
+            [cx - span, cy, cz],
+            [cx, cy, cz],
+            [cx + span, cy, cz],
+        ])
+        self._add_path(path)
+
+    def _add_path(self, path):
+        """Append a path and update visuals/tree/selector."""
         self._sample_paths.append(path)
 
-        # If paths are visible, create a widget for the new path immediately
         if self._sample_paths_visible:
-            self._create_line_widget(len(self._sample_paths) - 1)
+            self._create_path_visual(len(self._sample_paths) - 1)
 
         self._refresh_tree()
         self._refresh_path_selector()
         self._update_plot()
+
+    def _insert_polyline_point(self, path_idx, point_idx, before=True):
+        """Insert a new waypoint in a polyline at the midpoint between neighbors."""
+        sp = self._sample_paths[path_idx]
+        pts = sp.points
+        n = len(pts)
+
+        if before:
+            if point_idx == 0:
+                # Before first point: mirror outward from first segment
+                delta = pts[0] - pts[1] if n > 1 else np.array([0.01, 0, 0])
+                new_pt = pts[0] + delta * 0.5
+                insert_idx = 0
+            else:
+                new_pt = (pts[point_idx - 1] + pts[point_idx]) / 2
+                insert_idx = point_idx
+        else:
+            if point_idx == n - 1:
+                # After last point: mirror outward from last segment
+                delta = pts[-1] - pts[-2] if n > 1 else np.array([0.01, 0, 0])
+                new_pt = pts[-1] + delta * 0.5
+                insert_idx = n
+            else:
+                new_pt = (pts[point_idx] + pts[point_idx + 1]) / 2
+                insert_idx = point_idx + 1
+
+        sp.points = np.insert(sp.points, insert_idx, new_pt, axis=0)
+
+        # Rebuild visual (number of handles changed)
+        if self._sample_paths_visible and path_idx < len(self._path_visuals):
+            self._teardown_path_visual(path_idx)
+            self._create_path_visual(path_idx)
+
+        self._refresh_tree()
+        if path_idx == self._selected_path_index:
+            self._update_plot()
+
+    def _delete_polyline_point(self, path_idx, point_idx):
+        """Remove a waypoint from a polyline (must keep at least 2)."""
+        sp = self._sample_paths[path_idx]
+        if len(sp.points) <= 2:
+            return
+        sp.points = np.delete(sp.points, point_idx, axis=0)
+
+        # Rebuild visual (number of handles changed)
+        if self._sample_paths_visible and path_idx < len(self._path_visuals):
+            self._teardown_path_visual(path_idx)
+            self._create_path_visual(path_idx)
+
+        self._refresh_tree()
+        if path_idx == self._selected_path_index:
+            self._update_plot()
 
     def _on_delete_selected_object(self):
         """Delete the object currently selected in the tree."""
@@ -842,25 +949,22 @@ class Visualizer:
             self._delete_path(idx)
 
     def _delete_path(self, path_idx):
-        """Remove a path by index, tearing down its widget."""
+        """Remove a path by index, tearing down its visual."""
         if path_idx >= len(self._sample_paths):
             return
 
-        # Tear down widget
-        if path_idx < len(self._line_widgets) and self._line_widgets[path_idx] is not None:
-            w = self._line_widgets[path_idx]
-            w.Off()
-            if w in self._plotter.line_widgets:
-                self._plotter.line_widgets.remove(w)
+        # Tear down visual
+        if path_idx < len(self._path_visuals):
+            self._teardown_path_visual(path_idx)
 
         # Remove from lists
         self._sample_paths.pop(path_idx)
-        if path_idx < len(self._line_widgets):
-            self._line_widgets.pop(path_idx)
+        if path_idx < len(self._path_visuals):
+            self._path_visuals.pop(path_idx)
 
-        # Rebuild all widget callbacks since indices shifted
+        # Rebuild all visuals since indices shifted (widget callbacks capture index)
         if self._sample_paths_visible:
-            self._rebuild_all_line_widgets()
+            self._rebuild_all_path_visuals()
 
         # Clamp selected index
         if self._sample_paths:
@@ -873,6 +977,28 @@ class Visualizer:
         self._refresh_tree()
         self._refresh_path_selector()
         self._update_plot()
+
+    def _selected_point_index(self):
+        """If a polyline point or its child is selected, return (path_idx, point_idx)."""
+        idx = self._tree_view.currentIndex()
+        if not idx.isValid():
+            return None
+        # Walk up to 3 levels checking for point_index metadata
+        for _ in range(3):
+            for col in range(2):
+                test_idx = idx.sibling(idx.row(), col)
+                if not test_idx.isValid():
+                    continue
+                item = self._tree_model.itemFromIndex(test_idx)
+                if item is None:
+                    continue
+                meta = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(meta, dict) and "point_index" in meta and "path" in meta:
+                    return (meta["path"], meta["point_index"])
+            if not idx.parent().isValid():
+                break
+            idx = idx.parent()
+        return None
 
     def _on_tree_context_menu(self, position):
         """Right-click context menu on the objects tree."""
@@ -892,9 +1018,30 @@ class Visualizer:
                     self.simulation.remove_loop(idx)
                     self._rebuild_scene()
         elif kind == "path":
-            delete_action = menu.addAction("Delete path")
+            point_info = self._selected_point_index()
+            sp = self._sample_paths[idx] if idx < len(self._sample_paths) else None
+
+            # Polyline point-level actions
+            add_before = add_after = delete_point = None
+            if point_info and isinstance(sp, PolylinePath):
+                add_before = menu.addAction("Add point before")
+                add_after = menu.addAction("Add point after")
+                if len(sp.points) > 2:
+                    delete_point = menu.addAction("Delete point")
+                menu.addSeparator()
+
+            delete_path_action = menu.addAction("Delete path")
             action = menu.exec(self._tree_view.viewport().mapToGlobal(position))
-            if action == delete_action:
+
+            if action is None:
+                pass
+            elif action == add_before:
+                self._insert_polyline_point(point_info[0], point_info[1], before=True)
+            elif action == add_after:
+                self._insert_polyline_point(point_info[0], point_info[1], before=False)
+            elif action == delete_point:
+                self._delete_polyline_point(point_info[0], point_info[1])
+            elif action == delete_path_action:
                 self._delete_path(idx)
 
     # ------------------------------------------------------------------
@@ -998,8 +1145,8 @@ class Visualizer:
         self._plane_widget = None
         self._slice_enabled = False
 
-        # Tear down all line widgets
-        self._teardown_all_line_widgets()
+        # Tear down all path visuals
+        self._teardown_all_path_visuals()
         self._sample_paths_visible = False
 
         self._add_loops(plotter, self._loop_line_width)
@@ -1222,7 +1369,7 @@ class Visualizer:
             self._update_field()
 
     # ------------------------------------------------------------------
-    # Sample path line widgets
+    # Sample path visuals (line widgets for segments, actors for polylines)
     # ------------------------------------------------------------------
 
     def _on_sample_paths_toggled(self, checked):
@@ -1233,78 +1380,193 @@ class Visualizer:
             return
 
         if self._sample_paths_visible:
-            self._rebuild_all_line_widgets()
+            self._rebuild_all_path_visuals()
             self._plot_container.setVisible(True)
             self._refresh_path_selector()
             self._update_plot()
         else:
-            self._teardown_all_line_widgets()
+            self._teardown_all_path_visuals()
             self._plot_container.setVisible(False)
 
-    def _create_line_widget(self, path_idx):
-        """Create a line widget for the path at path_idx."""
+    def _create_path_visual(self, path_idx):
+        """Create the appropriate 3D visual for the path at path_idx."""
         plotter = self._plotter
         if plotter is None:
             return
         sp = self._sample_paths[path_idx]
-        extents = self._grid_extents or self._auto_extents()
 
-        def on_moved(polydata, idx=path_idx):
-            self._on_line_moved(idx, polydata)
+        # Ensure list is long enough
+        while len(self._path_visuals) <= path_idx:
+            self._path_visuals.append(None)
 
-        widget = plotter.add_line_widget(
-            on_moved,
-            bounds=list(extents),
-            factor=1.0,
-            resolution=1,
+        if isinstance(sp, PolylinePath):
+            line_actor = self._make_polyline_line_actor(plotter, sp)
+            sphere_widgets = self._make_polyline_handles(plotter, sp, path_idx)
+            self._path_visuals[path_idx] = {
+                "kind": "polyline",
+                "line_actor": line_actor,
+                "sphere_widgets": sphere_widgets,
+            }
+        else:
+            # LineSegmentPath — interactive line widget
+            extents = self._grid_extents or self._auto_extents()
+
+            def on_moved(polydata, idx=path_idx):
+                self._on_line_moved(idx, polydata)
+
+            widget = plotter.add_line_widget(
+                on_moved,
+                bounds=list(extents),
+                factor=1.0,
+                resolution=1,
+                color="black",
+                interaction_event="end",
+            )
+
+            if hasattr(sp, "start") and hasattr(sp, "end"):
+                widget.SetPoint1(sp.start.tolist())
+                widget.SetPoint2(sp.end.tolist())
+
+            widget.SetHandleSize(widget.GetHandleSize() * 0.5)
+            widget.GetHandleProperty().SetColor(0.2, 0.2, 0.2)
+            widget.GetSelectedHandleProperty().SetColor(1.0, 0.0, 0.0)
+            widget.GetSelectedLineProperty().SetColor(0.2, 0.2, 0.2)
+            widget.ClampToBoundsOff()
+
+            self._path_visuals[path_idx] = {"kind": "widget", "widget": widget}
+
+    @staticmethod
+    def _make_polyline_line_actor(plotter, sp):
+        """Add a polyline path as a rendered 3D line and return the actor."""
+        pts = sp.points
+        n = len(pts)
+        lines = np.column_stack([
+            np.full(n - 1, 2),
+            np.arange(n - 1),
+            np.arange(1, n),
+        ])
+        poly = pv.PolyData(pts, lines=lines)
+        return plotter.add_mesh(
+            poly,
             color="black",
-            interaction_event="end",
+            line_width=2.0,
+            render_lines_as_tubes=True,
+            reset_camera=False,
         )
 
-        if hasattr(sp, "start") and hasattr(sp, "end"):
-            widget.SetPoint1(sp.start.tolist())
-            widget.SetPoint2(sp.end.tolist())
+    def _make_polyline_handles(self, plotter, sp, path_idx):
+        """Create sphere widgets for draggable polyline waypoints."""
+        pts = sp.points
+        extents = pts.max(axis=0) - pts.min(axis=0)
+        radius = max(np.max(extents) * 0.012, 1e-4)
 
-        widget.SetHandleSize(widget.GetHandleSize() * 0.5)
-        widget.GetHandleProperty().SetColor(0.2, 0.2, 0.2)
-        widget.GetSelectedHandleProperty().SetColor(1.0, 0.0, 0.0)
-        widget.GetSelectedLineProperty().SetColor(0.2, 0.2, 0.2)
-        widget.ClampToBoundsOff()
+        sphere_widgets = []
+        for k in range(len(pts)):
+            def on_moved(center, idx=path_idx, point_k=k):
+                self._on_polyline_sphere_moved(idx, point_k, center)
 
-        # Ensure _line_widgets list is long enough
-        while len(self._line_widgets) <= path_idx:
-            self._line_widgets.append(None)
-        self._line_widgets[path_idx] = widget
+            widget = plotter.add_sphere_widget(
+                on_moved,
+                center=pts[k],
+                radius=radius,
+                color="#333333",
+                style="surface",
+                selected_color="red",
+                interaction_event="always",
+            )
 
-    def _rebuild_all_line_widgets(self):
-        """Tear down and recreate all line widgets (e.g. after index shift)."""
-        self._teardown_all_line_widgets()
-        for i in range(len(self._sample_paths)):
-            self._create_line_widget(i)
+            # Add end-interaction observer for tree/plot refresh
+            def on_released(_obj, _event, idx=path_idx):
+                self._on_polyline_sphere_released(idx)
 
-    def _teardown_all_line_widgets(self):
-        """Remove all line widgets from the plotter."""
-        plotter = self._plotter
-        for w in self._line_widgets:
-            if w is not None:
-                w.Off()
-                if plotter is not None and w in plotter.line_widgets:
-                    plotter.line_widgets.remove(w)
-        self._line_widgets.clear()
+            widget.AddObserver("EndInteractionEvent", on_released)
+            sphere_widgets.append(widget)
 
-    def _sync_line_widget(self, path_idx):
-        """Push path start/end to the line widget at path_idx."""
-        if path_idx >= len(self._line_widgets):
-            return
-        w = self._line_widgets[path_idx]
-        if w is None:
+        return sphere_widgets
+
+    def _on_polyline_sphere_moved(self, path_idx, point_idx, center):
+        """Callback when a polyline sphere handle is dragged.
+
+        Fires continuously during drag — only rebuild the lightweight 3D line.
+        Tree and plot are updated on release via the end-interaction callback.
+        """
+        if path_idx >= len(self._sample_paths):
             return
         sp = self._sample_paths[path_idx]
-        if hasattr(sp, "start") and hasattr(sp, "end"):
-            w.SetPoint1(sp.start.tolist())
-            w.SetPoint2(sp.end.tolist())
-            if self._plotter is not None:
-                self._plotter.render()
+        sp.points[point_idx] = np.array(center)
+
+        vis = self._path_visuals[path_idx]
+        if vis and vis["kind"] == "polyline":
+            plotter = self._plotter
+            if plotter is not None:
+                plotter.remove_actor(vis["line_actor"])
+                vis["line_actor"] = self._make_polyline_line_actor(plotter, sp)
+                plotter.render()
+
+    def _on_polyline_sphere_released(self, path_idx):
+        """Callback when a polyline sphere handle drag ends."""
+        self._refresh_tree()
+        if path_idx == self._selected_path_index and self._auto_update:
+            self._update_plot()
+
+    def _rebuild_all_path_visuals(self):
+        """Tear down and recreate all path visuals."""
+        self._teardown_all_path_visuals()
+        for i in range(len(self._sample_paths)):
+            self._create_path_visual(i)
+
+    def _teardown_path_visual(self, path_idx):
+        """Tear down a single path visual by index."""
+        if path_idx >= len(self._path_visuals):
+            return
+        vis = self._path_visuals[path_idx]
+        if vis is None:
+            return
+        plotter = self._plotter
+        if vis["kind"] == "widget":
+            w = vis["widget"]
+            w.Off()
+            if plotter is not None and w in plotter.line_widgets:
+                plotter.line_widgets.remove(w)
+        elif vis["kind"] == "polyline":
+            if plotter is not None:
+                plotter.remove_actor(vis["line_actor"])
+                for sw in vis["sphere_widgets"]:
+                    sw.Off()
+                    if sw in plotter.sphere_widgets:
+                        plotter.sphere_widgets.remove(sw)
+        self._path_visuals[path_idx] = None
+
+    def _teardown_all_path_visuals(self):
+        """Remove all path visuals from the plotter."""
+        for i in range(len(self._path_visuals)):
+            self._teardown_path_visual(i)
+        self._path_visuals.clear()
+
+    def _sync_path_visual(self, path_idx):
+        """Push updated path data to its 3D visual."""
+        if path_idx >= len(self._path_visuals):
+            return
+        vis = self._path_visuals[path_idx]
+        if vis is None:
+            return
+        sp = self._sample_paths[path_idx]
+        plotter = self._plotter
+
+        if vis["kind"] == "widget":
+            w = vis["widget"]
+            if hasattr(sp, "start") and hasattr(sp, "end"):
+                w.SetPoint1(sp.start.tolist())
+                w.SetPoint2(sp.end.tolist())
+                if plotter is not None:
+                    plotter.render()
+        elif vis["kind"] == "polyline" and isinstance(sp, PolylinePath):
+            # Rebuild entire visual (sphere count may differ, simpler than
+            # repositioning individual widgets)
+            self._teardown_path_visual(path_idx)
+            self._create_path_visual(path_idx)
+            if plotter is not None:
+                plotter.render()
 
     def _on_line_moved(self, path_index, polydata):
         """Callback when a sample line widget is dragged."""
@@ -1383,6 +1645,8 @@ class Visualizer:
         if sp is None or not self.simulation.loops:
             for curve in self._plot_curves.values():
                 curve.setData([], [])
+            if self._waypoint_markers is not None:
+                self._waypoint_markers.setData([], [])
             return
 
         n = self.N_PATH_SAMPLES
@@ -1400,6 +1664,16 @@ class Visualizer:
         self._plot_curves["By"].setData(distances, By)
         self._plot_curves["Bz"].setData(distances, Bz)
         self._plot_curves["|B|"].setData(distances, Bmag)
+
+        # Waypoint markers for polyline paths
+        if self._waypoint_markers is not None:
+            if isinstance(sp, PolylinePath):
+                wp_dists = np.concatenate([[0.0], np.cumsum(sp.segment_lengths)])
+                self._waypoint_markers.setData(
+                    wp_dists, np.zeros(len(wp_dists)),
+                )
+            else:
+                self._waypoint_markers.setData([], [])
 
     # ------------------------------------------------------------------
     # Internal rendering helpers
