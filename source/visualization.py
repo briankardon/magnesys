@@ -27,6 +27,16 @@ class Visualizer:
 
     def __init__(self, simulation):
         self.simulation = simulation
+        self._plotter = None
+        self._field_actor = None
+        self._scalar_bar_actor = None
+
+        # State tracked for refreshing
+        self._grid_extents = None
+        self._grid_resolution = 10
+        self._field_scale = "auto"
+        self._arrow_size_mode = "linear"
+        self._auto_update = True
 
     # ------------------------------------------------------------------
     # Public API
@@ -75,20 +85,119 @@ class Visualizer:
         background : str
             Background color for the plot window.
         """
+        self._grid_extents = grid_extents
+        self._grid_resolution = grid_resolution
+        self._field_scale = field_scale
+        self._arrow_size_mode = arrow_size_mode
+
         plotter = pv.Plotter()
         plotter.set_background(background)
+        self._plotter = plotter
 
         if show_loops:
             self._add_loops(plotter, loop_line_width)
 
         if show_field and self.simulation.loops:
-            self._add_field(
-                plotter, grid_extents, grid_resolution, field_scale,
-                arrow_size_mode,
-            )
+            self._refresh_field()
+
+        self._add_widgets(plotter)
 
         plotter.add_axes()
         plotter.show()
+
+    # ------------------------------------------------------------------
+    # Widgets
+    # ------------------------------------------------------------------
+
+    def _add_widgets(self, plotter):
+        """Add interactive controls to the plotter."""
+        # Grid resolution slider (3 to 25)
+        plotter.add_slider_widget(
+            self._on_resolution_changed,
+            rng=[3, 25],
+            value=self._grid_resolution if isinstance(self._grid_resolution, int)
+                  else self._grid_resolution[0],
+            title="Grid resolution",
+            pointa=(0.02, 0.92),
+            pointb=(0.28, 0.92),
+            style="modern",
+            fmt="%.0f",
+        )
+
+        # Auto-update checkbox
+        plotter.add_checkbox_button_widget(
+            self._on_auto_update_toggled,
+            value=self._auto_update,
+            position=(10, 10),
+            size=30,
+            color_on="green",
+            color_off="grey",
+        )
+        plotter.add_text(
+            "Auto-update",
+            position=(45, 10),
+            font_size=9,
+            color="black",
+        )
+
+        # Manual refresh button
+        plotter.add_checkbox_button_widget(
+            self._on_refresh_clicked,
+            value=False,
+            position=(160, 10),
+            size=30,
+            color_on="steelblue",
+            color_off="steelblue",
+        )
+        plotter.add_text(
+            "Refresh",
+            position=(195, 10),
+            font_size=9,
+            color="black",
+        )
+
+    def _on_resolution_changed(self, value):
+        """Callback for the grid resolution slider."""
+        new_res = int(round(value))
+        if new_res == self._grid_resolution:
+            return
+        self._grid_resolution = new_res
+        if self._auto_update:
+            self._refresh_field()
+
+    def _on_auto_update_toggled(self, state):
+        """Callback for the auto-update checkbox."""
+        self._auto_update = bool(state)
+
+    def _on_refresh_clicked(self, _state):
+        """Callback for the manual refresh button."""
+        self._refresh_field()
+
+    # ------------------------------------------------------------------
+    # Field refresh
+    # ------------------------------------------------------------------
+
+    def _refresh_field(self):
+        """Recompute and redraw the magnetic field arrows."""
+        plotter = self._plotter
+        if plotter is None:
+            return
+
+        # Remove old field actors and scalar bar
+        if self._field_actor is not None:
+            plotter.remove_actor(self._field_actor)
+            self._field_actor = None
+        plotter.scalar_bars.clear()
+
+        if not self.simulation.loops:
+            return
+
+        self._field_actor, self._scalar_bar_actor = self._build_field(
+            plotter, self._grid_extents, self._grid_resolution,
+            self._field_scale, self._arrow_size_mode,
+        )
+
+        plotter.render()
 
     # ------------------------------------------------------------------
     # Internal rendering helpers
@@ -132,9 +241,12 @@ class Visualizer:
             )
             plotter.add_mesh(cone, color=color)
 
-    def _add_field(self, plotter, grid_extents, grid_resolution, field_scale,
-                   arrow_size_mode):
-        """Add the magnetic field quiver plot to the plotter."""
+    def _build_field(self, plotter, grid_extents, grid_resolution,
+                     field_scale, arrow_size_mode):
+        """Compute field and add arrows to plotter.
+
+        Returns (field_actor, scalar_bar_actor) so they can be removed later.
+        """
         extents = grid_extents or self._auto_extents()
         x_min, x_max, y_min, y_max, z_min, z_max = extents
 
@@ -162,7 +274,7 @@ class Visualizer:
         magnitudes = np.linalg.norm(vectors, axis=1)
 
         if len(points) == 0:
-            return
+            return None, None
 
         grid = pv.PolyData(points)
 
@@ -177,6 +289,9 @@ class Visualizer:
         ])
         cell_size = np.mean(spacing[spacing > 0])
 
+        # Resolve auto scale once so we use a consistent value
+        resolved_scale = field_scale
+
         if arrow_size_mode == "uniform":
             # All arrows same size — direction only, magnitude shown by color
             safe_mag = np.where(magnitudes > 0, magnitudes, 1.0)
@@ -184,11 +299,11 @@ class Visualizer:
             grid["B"] = unit_vectors
             grid["scale"] = np.ones(len(magnitudes))
 
-            if field_scale == "auto":
-                field_scale = 0.4 * cell_size
+            if resolved_scale == "auto":
+                resolved_scale = 0.4 * cell_size
 
             arrows = grid.glyph(
-                orient="B", scale="scale", factor=field_scale,
+                orient="B", scale="scale", factor=resolved_scale,
             )
 
         elif arrow_size_mode == "log":
@@ -209,12 +324,12 @@ class Visualizer:
             grid["B"] = unit_vectors
             grid["scale"] = log_scale
 
-            if field_scale == "auto":
+            if resolved_scale == "auto":
                 median_log = np.median(log_scale[log_scale > 0]) if np.any(log_scale > 0) else 1.0
-                field_scale = 0.5 * cell_size / median_log
+                resolved_scale = 0.5 * cell_size / median_log
 
             arrows = grid.glyph(
-                orient="B", scale="scale", factor=field_scale,
+                orient="B", scale="scale", factor=resolved_scale,
             )
 
         else:
@@ -222,20 +337,22 @@ class Visualizer:
             grid["B"] = vectors
             grid["scale"] = magnitudes
 
-            if field_scale == "auto":
+            if resolved_scale == "auto":
                 median_mag = np.median(magnitudes[magnitudes > 0]) if np.any(magnitudes > 0) else 1.0
-                field_scale = 0.5 * cell_size / median_mag
+                resolved_scale = 0.5 * cell_size / median_mag
 
             arrows = grid.glyph(
-                orient="B", scale="scale", factor=field_scale,
+                orient="B", scale="scale", factor=resolved_scale,
             )
 
-        plotter.add_mesh(
+        field_actor = plotter.add_mesh(
             arrows,
             scalars="magnitude",
             cmap="coolwarm",
             scalar_bar_args={"title": "|B| (T)"},
         )
+
+        return field_actor, None
 
     def _auto_extents(self):
         """Compute grid extents from loop positions and sizes."""
