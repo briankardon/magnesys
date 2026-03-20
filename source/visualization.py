@@ -166,10 +166,13 @@ class Visualizer:
         self._plotter = plotter
 
         self._plot_widget = self._build_plot_widget()
+        self._plot_widget.setMinimumHeight(200)
         splitter.addWidget(self._plot_widget)
         self._plot_widget.setVisible(False)  # hidden until sample line enabled
 
-        splitter.setStretchFactor(0, 3)  # 3D viewport gets more space
+        # Set initial splitter sizes explicitly (pixels)
+        splitter.setSizes([660, 240])
+        splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
 
         hlayout.addWidget(splitter, stretch=4)
@@ -532,6 +535,7 @@ class Visualizer:
             self._plane_widget.SetHandleSize(
                 self._plane_widget.GetHandleSize() * 0.5
             )
+            self._plane_widget.ScaleEnabledOff()
 
             self._update_field()
         else:
@@ -580,6 +584,9 @@ class Visualizer:
             # Set to current path endpoints
             self._line_widget.SetPoint1(self._sample_path.start.tolist())
             self._line_widget.SetPoint2(self._sample_path.end.tolist())
+            self._line_widget.SetHandleSize(
+                self._line_widget.GetHandleSize() * 0.5
+            )
 
             self._plot_widget.setVisible(True)
             self._update_plot()
