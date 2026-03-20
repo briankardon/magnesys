@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 from pyvistaqt import QtInteractor
 
 from . import project
-from .path import LineSegmentPath, PolylinePath
+from .path import LineSegmentPath, PolylinePath, SplinePath
 
 
 class ExportFieldAlongPathDialog(QDialog):
@@ -482,7 +482,7 @@ class Visualizer:
             root.appendRow([key_item, val_item])
 
             # Path-specific properties
-            if isinstance(sp, PolylinePath):
+            if isinstance(sp, (PolylinePath, SplinePath)):
                 for k, pt in enumerate(sp.points):
                     pt_key = QStandardItem(f"Point {k} (m)")
                     pt_val = QStandardItem(_format_vec(pt))
@@ -776,6 +776,10 @@ class Visualizer:
         add_polyline.triggered.connect(self._on_add_polyline_path)
         add_path_menu.addAction(add_polyline)
 
+        add_spline = QAction("&Spline", window)
+        add_spline.triggered.connect(self._on_add_spline_path)
+        add_path_menu.addAction(add_spline)
+
         edit_menu.addSeparator()
 
         delete_action = QAction("&Delete selected object", window)
@@ -866,6 +870,21 @@ class Visualizer:
         span = (extents[1] - extents[0]) * 0.4
 
         path = PolylinePath(points=[
+            [cx - span, cy, cz],
+            [cx, cy, cz],
+            [cx + span, cy, cz],
+        ])
+        self._add_path(path)
+
+    def _on_add_spline_path(self):
+        """Add a spline path with 3 default waypoints."""
+        extents = self._grid_extents or self._auto_extents()
+        cx = (extents[0] + extents[1]) / 2
+        cy = (extents[2] + extents[3]) / 2
+        cz = (extents[4] + extents[5]) / 2
+        span = (extents[1] - extents[0]) * 0.4
+
+        path = SplinePath(points=[
             [cx - span, cy, cz],
             [cx, cy, cz],
             [cx + span, cy, cz],
@@ -1023,7 +1042,7 @@ class Visualizer:
 
             # Polyline point-level actions
             add_before = add_after = delete_point = None
-            if point_info and isinstance(sp, PolylinePath):
+            if point_info and isinstance(sp, (PolylinePath, SplinePath)):
                 add_before = menu.addAction("Add point before")
                 add_after = menu.addAction("Add point after")
                 if len(sp.points) > 2:
@@ -1399,7 +1418,7 @@ class Visualizer:
         while len(self._path_visuals) <= path_idx:
             self._path_visuals.append(None)
 
-        if isinstance(sp, PolylinePath):
+        if isinstance(sp, (PolylinePath, SplinePath)):
             line_actor = self._make_polyline_line_actor(plotter, sp)
             sphere_widgets = self._make_polyline_handles(plotter, sp, path_idx)
             self._path_visuals[path_idx] = {
@@ -1437,8 +1456,12 @@ class Visualizer:
 
     @staticmethod
     def _make_polyline_line_actor(plotter, sp):
-        """Add a polyline path as a rendered 3D line and return the actor."""
-        pts = sp.points
+        """Add a polyline/spline path as a rendered 3D line and return the actor."""
+        if isinstance(sp, SplinePath):
+            # Sample the smooth curve densely for rendering
+            pts = sp.get_points(max(len(sp.points) * 30, 100))
+        else:
+            pts = sp.points
         n = len(pts)
         lines = np.column_stack([
             np.full(n - 1, 2),
@@ -1560,7 +1583,7 @@ class Visualizer:
                 w.SetPoint2(sp.end.tolist())
                 if plotter is not None:
                     plotter.render()
-        elif vis["kind"] == "polyline" and isinstance(sp, PolylinePath):
+        elif vis["kind"] == "polyline" and isinstance(sp, (PolylinePath, SplinePath)):
             # Rebuild entire visual (sphere count may differ, simpler than
             # repositioning individual widgets)
             self._teardown_path_visual(path_idx)
@@ -1667,7 +1690,7 @@ class Visualizer:
 
         # Waypoint markers for polyline paths
         if self._waypoint_markers is not None:
-            if isinstance(sp, PolylinePath):
+            if isinstance(sp, (PolylinePath, SplinePath)):
                 wp_dists = np.concatenate([[0.0], np.cumsum(sp.segment_lengths)])
                 self._waypoint_markers.setData(
                     wp_dists, np.zeros(len(wp_dists)),
