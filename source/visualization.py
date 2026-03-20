@@ -65,6 +65,7 @@ class Visualizer:
         self._plotter = None
         self._window = None
         self._field_actor = None
+        self._loop_actors = []  # actors for loop geometry (lines + cones)
         self._project_path = None
 
         # State tracked for updating
@@ -575,6 +576,7 @@ class Visualizer:
         plotter.clear()
 
         self._field_actor = None
+        self._loop_actors.clear()
         self._plane_widget = None
         self._slice_enabled = False
         self._line_widget = None
@@ -799,17 +801,13 @@ class Visualizer:
         if plotter is None:
             return
 
-        # Save and restore camera to prevent visual flash during rebuild
-        cam_pos = plotter.camera_position
+        # Remove only the loop geometry actors (not axes, widgets, etc.)
+        for actor in self._loop_actors:
+            plotter.remove_actor(actor)
+        self._loop_actors.clear()
 
-        plotter.clear_actors()
-
-        self._field_actor = None
         self._add_loops(plotter, self._loop_line_width)
         self._update_field()
-
-        plotter.add_axes()
-        plotter.camera_position = cam_pos
 
         # Refresh the tree to show updated values (e.g. re-normalized normals)
         self._refresh_loops_tree()
@@ -888,13 +886,14 @@ class Visualizer:
             ])
             poly = pv.PolyData(points, lines=lines)
             color = self.LOOP_COLORS[i % len(self.LOOP_COLORS)]
-            plotter.add_mesh(
+            actor = plotter.add_mesh(
                 poly,
                 color=color,
                 line_width=line_width,
                 render_lines_as_tubes=True,
                 label=f"Loop {i}",
             )
+            self._loop_actors.append(actor)
 
             idx = 0
             tangent = path[(idx + 1) % (n - 1)] - path[idx]
@@ -908,7 +907,8 @@ class Visualizer:
                 radius=cone_height * 0.4,
                 resolution=20,
             )
-            plotter.add_mesh(cone, color=color)
+            actor = plotter.add_mesh(cone, color=color)
+            self._loop_actors.append(actor)
 
     def _make_plane_grid(self, normal, origin, extents, resolution):
         """Create a 2D grid of points lying in the given plane.
