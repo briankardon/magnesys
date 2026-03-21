@@ -151,6 +151,8 @@ class Visualizer:
         self._locked_arrow_scale = None  # resolved glyph factor when locked
         self._locked_log_min_mag = None  # log-mode reference floor when locked
 
+        self._probe_actors = []  # 3D probe markers along paths
+
         # Slice plane state
         self._slice_enabled = False
         self._slice_normal = np.array([0.0, 0.0, 1.0])
@@ -247,6 +249,9 @@ class Visualizer:
 
         plotter = QtInteractor(splitter)
         plotter.set_background(background)
+        # Enable depth-based picking so closer widgets take priority over
+        # the slice plane (instead of registration order).
+        plotter.iren.interactor.GetPickingManager().SetEnabled(True)
         splitter.addWidget(plotter)
         self._plotter = plotter
 
@@ -822,6 +827,63 @@ class Visualizer:
         """Move the time cursor to the current time value."""
         if self._time_cursor is not None and self._plot_mode == "time":
             self._time_cursor.setValue(self._time)
+
+    def _update_probe_markers(self):
+        """Update 3D probe markers showing sensor position along each path."""
+        plotter = self._plotter
+        if plotter is None:
+            return
+
+        # Remove old probe actors
+        for actor in self._probe_actors:
+            plotter.remove_actor(actor)
+        self._probe_actors.clear()
+
+        if not self._sample_paths_visible or not self._sample_paths:
+            return
+
+        t_max = self._auto_time_range()
+        frac = (self._time / t_max) if t_max > 0 else 0.0
+        frac = max(0.0, min(1.0, frac))
+
+        # Compute probe size from grid extents
+        extents = self._grid_extents or self._auto_extents()
+        grid_span = max(
+            extents[1] - extents[0],
+            extents[3] - extents[2],
+            extents[5] - extents[4],
+        )
+        size = grid_span * 0.015
+
+        for sp in self._sample_paths:
+            # Get the single point at the fractional position
+            n_pts = max(int(sp.length / (size * 0.1)), 200)
+            pts = sp.get_points(n_pts)
+            idx = min(int(frac * (n_pts - 1)), n_pts - 1)
+            pos = pts[idx]
+
+            # Diamond shape: two cones tip-to-tip
+            cone_up = pv.Cone(
+                center=pos + np.array([0, 0, size * 0.4]),
+                direction=[0, 0, -1],
+                height=size * 0.8,
+                radius=size * 0.35,
+                resolution=4,
+            )
+            cone_dn = pv.Cone(
+                center=pos - np.array([0, 0, size * 0.4]),
+                direction=[0, 0, 1],
+                height=size * 0.8,
+                radius=size * 0.35,
+                resolution=4,
+            )
+            diamond = cone_up + cone_dn
+            actor = plotter.add_mesh(
+                diamond, color="#e6261f", reset_camera=False,
+            )
+            self._probe_actors.append(actor)
+
+        plotter.render()
 
     # ------------------------------------------------------------------
     # Menu bar
@@ -1531,6 +1593,8 @@ class Visualizer:
         self._update_time_cursor()
         if self._auto_update:
             self._update_field()
+        else:
+            self._update_probe_markers()
 
     def _on_time_slider_moved(self, pos):
         """Callback for the time slider (0–1000 maps to one full period)."""
@@ -1542,6 +1606,8 @@ class Visualizer:
         self._update_time_cursor()
         if self._auto_update:
             self._update_field()
+        else:
+            self._update_probe_markers()
 
     def _auto_time_range(self):
         """Compute a sensible time range from source frequencies."""
@@ -1640,9 +1706,10 @@ class Visualizer:
             self._rebuild_all_path_visuals()
             self._plot_container.setVisible(True)
             self._refresh_path_selector()
-            self._update_plot()
+            self._update_plot()  # also updates probe markers
         else:
             self._teardown_all_path_visuals()
+            self._update_probe_markers()  # clears probes
             self._plot_container.setVisible(False)
 
     # ------------------------------------------------------------------
@@ -1672,56 +1739,30 @@ class Visualizer:
     # ------------------------------------------------------------------
 
     def _create_path_visual(self, path_idx):
-        """Create the appropriate 3D visual for the path at path_idx."""
+        """Create the 3D visual for the path at path_idx (line actor + sphere handles)."""
         plotter = self._plotter
         if plotter is None:
             return
         sp = self._sample_paths[path_idx]
 
-        if isinstance(sp, (PolylinePath, SplinePath)):
-            line_actor = self._make_polyline_line_actor(plotter, sp)
-            sphere_widgets = self._make_polyline_handles(plotter, sp, path_idx)
-            self._path_visuals[path_idx] = {
-                "kind": "polyline",
-                "line_actor": line_actor,
-                "sphere_widgets": sphere_widgets,
-            }
-        else:
-            # LineSegmentPath — interactive line widget
-            extents = self._grid_extents or self._auto_extents()
-
-            def on_moved(polydata, idx=path_idx):
-                self._on_line_moved(idx, polydata)
-
-            widget = plotter.add_line_widget(
-                on_moved,
-                bounds=list(extents),
-                factor=1.0,
-                resolution=1,
-                color="black",
-                interaction_event="end",
-            )
-
-            if hasattr(sp, "start") and hasattr(sp, "end"):
-                widget.SetPoint1(sp.start.tolist())
-                widget.SetPoint2(sp.end.tolist())
-
-            widget.SetHandleSize(widget.GetHandleSize() * 0.5)
-            widget.GetHandleProperty().SetColor(0.2, 0.2, 0.2)
-            widget.GetSelectedHandleProperty().SetColor(1.0, 0.0, 0.0)
-            widget.GetSelectedLineProperty().SetColor(0.2, 0.2, 0.2)
-            widget.ClampToBoundsOff()
-
-            self._path_visuals[path_idx] = {"kind": "widget", "widget": widget}
+        line_actor = self._make_path_line_actor(plotter, sp)
+        sphere_widgets = self._make_path_handles(plotter, sp, path_idx)
+        self._path_visuals[path_idx] = {
+            "kind": "path",
+            "line_actor": line_actor,
+            "sphere_widgets": sphere_widgets,
+        }
 
     @staticmethod
-    def _make_polyline_line_actor(plotter, sp):
-        """Add a polyline/spline path as a rendered 3D line and return the actor."""
+    def _make_path_line_actor(plotter, sp):
+        """Add any path type as a rendered 3D line and return the actor."""
         if isinstance(sp, SplinePath):
-            # Sample the smooth curve densely for rendering
             pts = sp.get_points(max(len(sp.points) * 30, 100))
-        else:
+        elif isinstance(sp, PolylinePath):
             pts = sp.points
+        else:
+            # LineSegmentPath
+            pts = np.array([sp.start, sp.end])
         n = len(pts)
         lines = np.column_stack([
             np.full(n - 1, 2),
@@ -1737,16 +1778,19 @@ class Visualizer:
             reset_camera=False,
         )
 
-    def _make_polyline_handles(self, plotter, sp, path_idx):
-        """Create sphere widgets for draggable polyline waypoints."""
-        pts = sp.points
+    def _make_path_handles(self, plotter, sp, path_idx):
+        """Create sphere widgets for draggable path control points."""
+        if isinstance(sp, (PolylinePath, SplinePath)):
+            pts = sp.points
+        else:
+            pts = np.array([sp.start, sp.end])
         extents = pts.max(axis=0) - pts.min(axis=0)
         radius = max(np.max(extents) * 0.012, 1e-4)
 
         sphere_widgets = []
         for k in range(len(pts)):
             def on_moved(center, idx=path_idx, point_k=k):
-                self._on_polyline_sphere_moved(idx, point_k, center)
+                self._on_path_sphere_moved(idx, point_k, center)
 
             widget = plotter.add_sphere_widget(
                 on_moved,
@@ -1760,15 +1804,15 @@ class Visualizer:
 
             # Add end-interaction observer for tree/plot refresh
             def on_released(_obj, _event, idx=path_idx):
-                self._on_polyline_sphere_released(idx)
+                self._on_path_sphere_released(idx)
 
             widget.AddObserver("EndInteractionEvent", on_released)
             sphere_widgets.append(widget)
 
         return sphere_widgets
 
-    def _on_polyline_sphere_moved(self, path_idx, point_idx, center):
-        """Callback when a polyline sphere handle is dragged.
+    def _on_path_sphere_moved(self, path_idx, point_idx, center):
+        """Callback when a path sphere handle is dragged.
 
         Fires continuously during drag — only rebuild the lightweight 3D line.
         Tree and plot are updated on release via the end-interaction callback.
@@ -1776,17 +1820,24 @@ class Visualizer:
         if path_idx >= len(self._sample_paths):
             return
         sp = self._sample_paths[path_idx]
-        sp.points[point_idx] = np.array(center)
+        new_pos = np.array(center)
+
+        if isinstance(sp, (PolylinePath, SplinePath)):
+            sp.points[point_idx] = new_pos
+        elif point_idx == 0:
+            sp.start = new_pos
+        else:
+            sp.end = new_pos
 
         vis = self._path_visuals[path_idx]
-        if vis and vis["kind"] == "polyline":
+        if vis and vis["kind"] == "path":
             plotter = self._plotter
             if plotter is not None:
                 plotter.remove_actor(vis["line_actor"])
-                vis["line_actor"] = self._make_polyline_line_actor(plotter, sp)
+                vis["line_actor"] = self._make_path_line_actor(plotter, sp)
                 plotter.render()
 
-    def _on_polyline_sphere_released(self, path_idx):
+    def _on_path_sphere_released(self, path_idx):
         """Callback when a polyline sphere handle drag ends."""
         self._refresh_tree()
         if path_idx == self._selected_path_index and self._auto_update:
@@ -1806,12 +1857,7 @@ class Visualizer:
         if vis is None:
             return
         plotter = self._plotter
-        if vis["kind"] == "widget":
-            w = vis["widget"]
-            w.Off()
-            if plotter is not None and w in plotter.line_widgets:
-                plotter.line_widgets.remove(w)
-        elif vis["kind"] == "polyline":
+        if vis["kind"] == "path":
             if plotter is not None:
                 plotter.remove_actor(vis["line_actor"])
                 for sw in vis["sphere_widgets"]:
@@ -1835,31 +1881,12 @@ class Visualizer:
         sp = self._sample_paths[path_idx]
         plotter = self._plotter
 
-        if vis["kind"] == "widget":
-            w = vis["widget"]
-            if hasattr(sp, "start") and hasattr(sp, "end"):
-                w.SetPoint1(sp.start.tolist())
-                w.SetPoint2(sp.end.tolist())
-                if plotter is not None:
-                    plotter.render()
-        elif vis["kind"] == "polyline" and isinstance(sp, (PolylinePath, SplinePath)):
-            # Rebuild entire visual (sphere count may differ, simpler than
-            # repositioning individual widgets)
+        if vis["kind"] == "path":
+            # Rebuild entire visual (simpler than repositioning individual widgets)
             self._teardown_path_visual(path_idx)
             self._create_path_visual(path_idx)
             if plotter is not None:
                 plotter.render()
-
-    def _on_line_moved(self, path_index, polydata):
-        """Callback when a sample line widget is dragged."""
-        pts = np.array(polydata.points)
-        if len(pts) >= 2 and path_index < len(self._sample_paths):
-            self._sample_paths[path_index] = LineSegmentPath(
-                start=pts[0], end=pts[-1],
-            )
-            self._refresh_tree()
-            if path_index == self._selected_path_index and self._auto_update:
-                self._update_plot()
 
     # ------------------------------------------------------------------
     # Field update
@@ -1948,6 +1975,8 @@ class Visualizer:
                 pw.disableAutoRange(axis="y")
                 if self._locked_yrange is not None:
                     pw.setYRange(*self._locked_yrange, padding=0)
+
+        self._update_probe_markers()
 
     def _update_plot_position_mode(self, sp):
         """B vs. position along path at the current time."""
