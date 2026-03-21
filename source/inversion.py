@@ -317,6 +317,159 @@ def invert_trace(field_table, t, signal, window_periods=1.0):
     return t_positions, positions
 
 
+def invert_trace_multipass(field_table, t, signal, window_periods=3.0,
+                           overlap=0.9):
+    """Two-pass inversion: coarse pass then dense refinement pass.
+
+    Pass 1: standard windows at 50% overlap for coarse trajectory.
+    Pass 2: same window size but high overlap (default 90%) for denser
+    temporal resolution, using the first-pass trajectory to initialize
+    the optimizer (skipping the coarse KD-tree search).
+
+    Parameters
+    ----------
+    field_table : FieldTable
+    t : ndarray, shape (N,)
+    signal : ndarray, shape (N, 3)
+    window_periods : float
+        Demodulation window size (used for both passes).
+    overlap : float
+        Overlap fraction for the second pass (default 0.9).
+
+    Returns
+    -------
+    t_positions : ndarray, shape (M,)
+    positions : ndarray, shape (M, 3)
+    """
+    # --- Pass 1: coarse trajectory ---
+    t_coarse, pos_coarse = invert_trace(
+        field_table, t, signal, window_periods=window_periods,
+    )
+
+    if len(t_coarse) < 2:
+        return t_coarse, pos_coarse
+
+    # --- Interpolate coarse trajectory ---
+    pos_interp = interp1d(
+        t_coarse, pos_coarse, axis=0, kind="linear",
+        fill_value="extrapolate",
+    )
+
+    # --- Pass 2: dense windows, initialized from first pass ---
+    freqs = field_table.frequencies
+    min_freq = freqs.min()
+    window_duration = window_periods / min_freq
+    dt = t[1] - t[0] if len(t) > 1 else 1.0
+    window_samples = max(int(window_duration / dt), 2)
+
+    step = max(int(window_samples * (1.0 - overlap)), 1)
+    n_windows = max((len(t) - window_samples) // step + 1, 1)
+
+    t_positions = np.empty(n_windows)
+    positions = np.empty((n_windows, 3))
+
+    for i in range(n_windows):
+        start = i * step
+        end = start + window_samples
+        if end > len(t):
+            end = len(t)
+            start = max(end - window_samples, 0)
+
+        t_win = t[start:end]
+        sig_win = signal[start:end]
+        t_center = (t_win[0] + t_win[-1]) / 2.0
+
+        measurements = demodulate(t_win, sig_win, freqs)
+        predicted = pos_interp(t_center)
+        refined = field_table.refine(measurements, predicted)
+
+        t_positions[i] = t_center
+        positions[i] = refined
+
+    return t_positions, positions
+
+
+def invert_trace_6dof_multipass(field_table, t, signal, window_periods=3.0,
+                                overlap=0.9):
+    """Two-pass 6-DOF inversion with dense refinement.
+
+    Pass 1: standard 6-DOF at 50% overlap.
+    Pass 2: same window size, high overlap, initialized from first pass.
+
+    Parameters
+    ----------
+    field_table : FieldTable
+    t : ndarray, shape (N,)
+    signal : ndarray, shape (N, 3)
+    window_periods : float
+    overlap : float
+
+    Returns
+    -------
+    t_positions : ndarray, shape (M,)
+    positions : ndarray, shape (M, 3)
+    rotations : list of Rotation, length M
+    """
+    # --- Pass 1 ---
+    t_coarse, pos_coarse, rot_coarse = invert_trace_6dof(
+        field_table, t, signal, window_periods=window_periods,
+    )
+
+    if len(t_coarse) < 2:
+        return t_coarse, pos_coarse, rot_coarse
+
+    # --- Interpolate ---
+    pos_interp = interp1d(
+        t_coarse, pos_coarse, axis=0, kind="linear",
+        fill_value="extrapolate",
+    )
+    rotvecs_coarse = np.array([r.as_rotvec() for r in rot_coarse])
+    rv_interp = interp1d(
+        t_coarse, rotvecs_coarse, axis=0, kind="linear",
+        fill_value="extrapolate",
+    )
+
+    # --- Pass 2 ---
+    freqs = field_table.frequencies
+    min_freq = freqs.min()
+    window_duration = window_periods / min_freq
+    dt = t[1] - t[0] if len(t) > 1 else 1.0
+    window_samples = max(int(window_duration / dt), 2)
+
+    step = max(int(window_samples * (1.0 - overlap)), 1)
+    n_windows = max((len(t) - window_samples) // step + 1, 1)
+
+    t_positions = np.empty(n_windows)
+    positions = np.empty((n_windows, 3))
+    rotations = []
+
+    for i in range(n_windows):
+        start = i * step
+        end = start + window_samples
+        if end > len(t):
+            end = len(t)
+            start = max(end - window_samples, 0)
+
+        t_win = t[start:end]
+        sig_win = signal[start:end]
+        t_center = (t_win[0] + t_win[-1]) / 2.0
+
+        measurements = demodulate(t_win, sig_win, freqs)
+        predicted_pos = pos_interp(t_center)
+        predicted_rv = rv_interp(t_center)
+
+        pos, rot = _refine_6dof(
+            field_table, measurements, predicted_pos,
+            initial_rotvec=predicted_rv,
+        )
+
+        t_positions[i] = t_center
+        positions[i] = pos
+        rotations.append(rot)
+
+    return t_positions, positions, rotations
+
+
 # ------------------------------------------------------------------
 # Rotation utilities
 # ------------------------------------------------------------------
