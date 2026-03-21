@@ -24,10 +24,10 @@ All experiments in this section assume the sensor is in a fixed orientation
 **Grid resolution:** 25³
 **Window:** 1 period of lowest frequency (10ms)
 
-| Metric | Result |
-|--------|--------|
-| Position median | 32 mm |
-| Position max | 52 mm |
+| Metric | Error |
+|--------|-------|
+| Position error (median) | 32 mm |
+| Position error (max) | 52 mm |
 
 **Problem identified:** Each coil treated as a separate source (6 entries in field table), but demodulator can only separate by frequency — two coils sharing a frequency get summed. Demodulated values didn't match the per-source field table entries.
 
@@ -52,8 +52,8 @@ All experiments in this section assume the sensor is in a fixed orientation
 
 **Test:** Fixed sensor position, varying demodulation window length.
 
-| Window (periods) | Demod error (max) | Position error |
-|-------------------|-------------------|----------------|
+| Window (periods) | Demod error (max) | Position error (from true) |
+|-------------------|-------------------|---------------------------|
 | 1 | 7.5e-7 | 9.2 mm |
 | 2 | 4.4e-7 | 4.6 mm |
 | 5 | 1.3e-7 | 1.5 mm |
@@ -67,8 +67,8 @@ All experiments in this section assume the sensor is in a fixed orientation
 
 **Scale:** 12cm, resolution 30³, speed 5 cm/s
 
-| Window (periods) | Estimates | Median | Max |
-|-------------------|-----------|--------|-----|
+| Window (periods) | Estimates | Position error (median) | Position error (max) |
+|-------------------|-----------|------------------------|---------------------|
 | 1 | 199 | 22.1 mm | 45.8 mm |
 | 3 | 65 | **3.3 mm** | 7.6 mm |
 | 5 | 39 | 3.1 mm | 7.0 mm |
@@ -81,8 +81,8 @@ All experiments in this section assume the sensor is in a fixed orientation
 
 **Test:** Vary current magnitude from 1A to 10A.
 
-| Current | 3-DOF median | 6-DOF median |
-|---------|-------------|-------------|
+| Current | 3-DOF pos. error (median) | 6-DOF pos. error (median) |
+|---------|--------------------------|--------------------------|
 | 1.0 A | 13.1 mm | 26.2 mm |
 | 5.0 A | 13.1 mm | 26.2 mm |
 | 10.0 A | 13.1 mm | 26.2 mm |
@@ -110,10 +110,10 @@ and the inversion must recover both position (x, y, z) and orientation
 1. Rotation-invariant coarse search using per-channel field **magnitudes** (invariant under rotation)
 2. SVD-based initial rotation estimate (Wahba's problem) from the coarse position
 
-| Metric | Before fixes | After fixes |
-|--------|-------------|-------------|
-| Position median | 98 mm | **9.4 mm** |
-| Orientation median | 145° | **31.8°** |
+| Metric | Error (before fixes) | Error (after fixes) |
+|--------|---------------------|---------------------|
+| Position error (median) | 98 mm | **9.4 mm** |
+| Orientation error (median) | 145° | **31.8°** |
 
 **Scale:** 12cm, 30° max perturbation, 3-period windows
 
@@ -127,8 +127,8 @@ and the inversion must recover both position (x, y, z) and orientation
 
 **Second attempt:** Tilt extracted geometrically (find rotation mapping gravity vector). Full rotation = R_yaw × R_tilt.
 
-| Mode | Position median | Orientation median |
-|------|-----------------|-------------------|
+| Mode | Position error (median) | Orientation error (median) |
+|------|------------------------|---------------------------|
 | 6-DOF (no IMU) | **9.4 mm** | **31.8°** |
 | 4-DOF + ideal IMU | 29.0 mm | 106° |
 
@@ -144,8 +144,8 @@ and the inversion must recover both position (x, y, z) and orientation
 
 **Setup:** Coils at ±30cm, diameter 70cm, tracking volume ±20cm.
 
-| Mode | Median | Max |
-|------|--------|-----|
+| Mode | Position error (median) | Position error (max) |
+|------|------------------------|---------------------|
 | 3-DOF, 3-period, 50% overlap | 13.1 mm | 24.1 mm |
 | 6-DOF, 3-period | 26.2 mm | 125 mm |
 
@@ -157,8 +157,8 @@ and the inversion must recover both position (x, y, z) and orientation
 
 **Test:** Different asymmetric configurations, same coil frequencies.
 
-| Config | Position median | Position max | Orient. median |
-|--------|-----------------|-------------|----------------|
+| Config | Pos. error (median) | Pos. error (max) | Orient. error (median) |
+|--------|---------------------|------------------|----------------------|
 | Symmetric | 26.2 mm | 125 mm | 29.0° |
 | Asym diameters only | 451 mm | 508 mm | 160° (broken) |
 | Asym diameters + currents | 27.0 mm | 130 mm | 30.7° |
@@ -178,8 +178,8 @@ and the inversion must recover both position (x, y, z) and orientation
 
 **Attempt 1 — shorter windows on second pass:**
 
-| Approach | Estimates | Median |
-|----------|-----------|--------|
+| Approach | Estimates | Pos. error (median) |
+|----------|-----------|---------------------|
 | Single pass, 3-period | 132 | 13.1 mm |
 | Multipass, 3p → 1p | 399 | 78.7 mm |
 | Multipass, 3p → 0.5p | 832 | 88.2 mm |
@@ -188,8 +188,8 @@ and the inversion must recover both position (x, y, z) and orientation
 
 **Attempt 2 — same window size, higher overlap:**
 
-| Approach | Estimates | Median | Max |
-|----------|-----------|--------|-----|
+| Approach | Estimates | Pos. error (median) | Pos. error (max) |
+|----------|-----------|---------------------|------------------|
 | Single, 3p, 50% overlap | 132 | 13.1 mm | 24.1 mm |
 | Single, 3p, 75% overlap | 267 | 10.8 mm | 24.7 mm |
 | Single, 3p, 90% overlap | 704 | 10.8 mm | 24.1 mm |
@@ -204,8 +204,8 @@ and the inversion must recover both position (x, y, z) and orientation
 **Test:** Vary excitation frequencies from 100 Hz to 1 kHz, keeping 3-period windows.
 Sampling rate scaled to 10× highest frequency. Cage scale (0.5m), 30° rotation.
 
-| Frequencies | Window | 3-DOF median | 3-DOF pts | 6-DOF median | 6-DOF orient. |
-|-------------|--------|-------------|-----------|-------------|---------------|
+| Frequencies | Window | 3-DOF pos. error (median) | 3-DOF pts | 6-DOF pos. error (median) | 6-DOF orient. error |
+|-------------|--------|--------------------------|-----------|--------------------------|---------------------|
 | 100/137/173 Hz | 30.0 ms | **13.1 mm** | 132 | **26.2 mm** | **29.0°** |
 | 300/411/519 Hz | 10.0 ms | **13.0 mm** | 399 | 459 mm | 158° (broken) |
 | 500/687/873 Hz | 6.0 ms | 14.9 mm | 665 | 460 mm | 159° (broken) |
@@ -231,8 +231,8 @@ position. This inverts the order of operations vs. the previous approach.
 4. Refine rotation using coarse position (SVD with actual field at that position)
 5. Joint 6-DOF refinement from this good starting point
 
-| Frequencies | Window | Position median | Position max | Orient. median | Orient. max |
-|-------------|--------|----------------|-------------|----------------|-------------|
+| Frequencies | Window | Pos. error (median) | Pos. error (max) | Orient. error (median) | Orient. error (max) |
+|-------------|--------|---------------------|------------------|----------------------|---------------------|
 | 100/137/173 Hz | 30.0 ms | 26.2 mm | 57.9 mm | 29.0° | 60.2° |
 | 300/411/519 Hz | 10.0 ms | **23.2 mm** | 91.0 mm | **28.6°** | 63.8° |
 | 500/687/873 Hz | 6.0 ms | 26.2 mm | 90.0 mm | 29.0° | 60.4° |
@@ -247,8 +247,8 @@ position. This inverts the order of operations vs. the previous approach.
 
 ## Summary of accuracy floors (noiseless)
 
-| Scenario | Position (median) | Orientation (median) |
-|----------|-------------------|---------------------|
+| Scenario | Position error (median) | Orientation error (median) |
+|----------|------------------------|---------------------------|
 | 3-DOF, small scale (12cm) | **3.3 mm** | n/a |
 | 3-DOF, cage scale (50cm) | **10.9 mm** | n/a |
 | 6-DOF, small scale (12cm) | **9.4 mm** | **31.8°** |
