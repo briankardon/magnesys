@@ -199,6 +199,25 @@ and the inversion must recover both position (x, y, z) and orientation
 
 ---
 
+### Experiment 11: Excitation frequency sweep (cage scale)
+
+**Test:** Vary excitation frequencies from 100 Hz to 1 kHz, keeping 3-period windows.
+Sampling rate scaled to 10× highest frequency. Cage scale (0.5m), 30° rotation.
+
+| Frequencies | Window | 3-DOF median | 3-DOF pts | 6-DOF median | 6-DOF orient. |
+|-------------|--------|-------------|-----------|-------------|---------------|
+| 100/137/173 Hz | 30.0 ms | **13.1 mm** | 132 | **26.2 mm** | **29.0°** |
+| 300/411/519 Hz | 10.0 ms | **13.0 mm** | 399 | 459 mm | 158° (broken) |
+| 500/687/873 Hz | 6.0 ms | 14.9 mm | 665 | 460 mm | 159° (broken) |
+| 1000/1373/1747 Hz | 3.0 ms | 15.1 mm | 1332 | 462 mm | 158° (broken) |
+
+**Findings:**
+1. **3-DOF accuracy is flat at ~13mm regardless of frequency.** The accuracy floor is set by field geometry and grid resolution, not demodulation window duration. This disproves the earlier "motion blur" hypothesis.
+2. **6-DOF completely fails at 300+ Hz.** The 100 Hz result (26mm) doesn't generalize to higher frequencies. Likely cause: the magnitude-based coarse search and SVD rotation initialization break down with the different sample counts / rotation sequences at higher rates. Needs investigation.
+3. **Higher frequencies give proportionally more position estimates** (132 → 1332) at the same accuracy for 3-DOF — useful for temporal resolution.
+
+---
+
 ## Summary of accuracy floors (noiseless)
 
 | Scenario | Position (median) | Orientation (median) |
