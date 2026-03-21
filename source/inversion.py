@@ -432,7 +432,233 @@ def apply_rotation_to_field(Bx, By, Bz, rotations):
 
 
 # ------------------------------------------------------------------
-# 6-DOF inversion (position + orientation)
+# IMU simulation
+# ------------------------------------------------------------------
+
+GRAVITY = np.array([0.0, 0.0, -9.81])
+
+
+def generate_imu_data(rotations, dt):
+    """Generate ideal 6-axis IMU data from a rotation sequence.
+
+    Parameters
+    ----------
+    rotations : list of Rotation, length N
+        Lab-to-sensor rotation at each sample.
+    dt : float
+        Time step in seconds.
+
+    Returns
+    -------
+    accel : ndarray, shape (N, 3)
+        Accelerometer readings (gravity in sensor frame, m/s^2).
+        Assumes negligible linear acceleration (slow motion).
+    gyro : ndarray, shape (N, 3)
+        Gyroscope readings (angular velocity in sensor frame, rad/s).
+    """
+    n = len(rotations)
+    accel = np.empty((n, 3))
+    gyro = np.empty((n, 3))
+
+    for i in range(n):
+        # Accelerometer: gravity projected into sensor frame
+        accel[i] = rotations[i].apply(GRAVITY)
+
+        # Gyroscope: angular velocity from consecutive rotations
+        if i < n - 1:
+            delta = rotations[i + 1] * rotations[i].inv()
+            gyro[i] = delta.as_rotvec() / dt
+        else:
+            gyro[i] = gyro[i - 1] if i > 0 else 0.0
+
+    return accel, gyro
+
+
+def tilt_from_accel(accel):
+    """Extract the tilt rotation (roll + pitch) from an accelerometer reading.
+
+    Finds the rotation R_tilt such that R_tilt @ [0, 0, -g] = accel,
+    with yaw = 0.  This decomposes the full rotation into
+    R_full = R_yaw @ R_tilt, where R_tilt is determined by gravity and
+    R_yaw is the unknown rotation about the vertical.
+
+    Parameters
+    ----------
+    accel : ndarray, shape (3,)
+        Accelerometer reading [ax, ay, az] in the sensor frame.
+
+    Returns
+    -------
+    tilt : Rotation
+        The tilt component of the sensor rotation (yaw = 0).
+    """
+    # Gravity in the sensor frame
+    g_sensor = accel / np.linalg.norm(accel)
+    # Gravity in the lab frame (unit vector)
+    g_lab = np.array([0.0, 0.0, -1.0])
+    # Find rotation that maps g_lab to g_sensor
+    v = np.cross(g_lab, g_sensor)
+    c = np.dot(g_lab, g_sensor)
+    if np.linalg.norm(v) < 1e-10:
+        if c > 0:
+            return Rotation.identity()
+        else:
+            return Rotation.from_rotvec([np.pi, 0, 0])
+    angle = np.arctan2(np.linalg.norm(v), c)
+    axis = v / np.linalg.norm(v)
+    return Rotation.from_rotvec(axis * angle)
+
+
+# ------------------------------------------------------------------
+# 4-DOF inversion (position + yaw, roll/pitch from IMU)
+# ------------------------------------------------------------------
+
+def _refine_4dof(field_table, measurements, initial_pos, tilt,
+                 initial_yaw=0.0):
+    """Refine position + yaw using nonlinear least squares.
+
+    The tilt component (from IMU accelerometer) is fixed; only yaw
+    (rotation about the vertical) is optimized along with position.
+
+    The full rotation is: R = R_yaw_about_z @ tilt
+
+    Parameters
+    ----------
+    field_table : FieldTable
+    measurements : ndarray, shape (n_channels, 3)
+    initial_pos : ndarray, shape (3,)
+    tilt : Rotation
+        Fixed tilt from accelerometer.
+    initial_yaw : float
+        Initial yaw guess (radians).
+
+    Returns
+    -------
+    position : ndarray, shape (3,)
+    rotation : Rotation
+    """
+    target = measurements.ravel()
+    scales = field_table._feature_scales
+
+    def residual(params):
+        pos = params[:3]
+        yaw = params[3]
+        R_yaw = Rotation.from_rotvec([0, 0, yaw])
+        R = R_yaw * tilt
+        lab_fields = field_table.field_at(pos)
+        sensor_fields = np.empty_like(lab_fields)
+        for ch in range(len(lab_fields)):
+            sensor_fields[ch] = R.apply(lab_fields[ch])
+        return (sensor_fields.ravel() - target) / scales
+
+    x0 = np.append(initial_pos, initial_yaw)
+
+    x_min, x_max, y_min, y_max, z_min, z_max = field_table.bounds
+    lb = [x_min, y_min, z_min, -np.pi]
+    ub = [x_max, y_max, z_max, np.pi]
+
+    result = least_squares(residual, x0, bounds=(lb, ub), method="trf")
+
+    pos = result.x[:3]
+    R_yaw = Rotation.from_rotvec([0, 0, result.x[3]])
+    rot = R_yaw * tilt
+    return pos, rot
+
+
+def invert_trace_imu(field_table, t, signal, accel, window_periods=1.0):
+    """Invert a rotated magnetometer trace using IMU-assisted 4-DOF.
+
+    Roll and pitch are extracted from the accelerometer; only position
+    and yaw are optimized.
+
+    Parameters
+    ----------
+    field_table : FieldTable
+    t : ndarray, shape (N,)
+    signal : ndarray, shape (N, 3)
+        Sensor-frame Bx, By, Bz.
+    accel : ndarray, shape (N, 3)
+        Accelerometer readings (sensor frame, m/s^2).
+    window_periods : float
+
+    Returns
+    -------
+    t_positions : ndarray, shape (M,)
+    positions : ndarray, shape (M, 3)
+    rotations : list of Rotation, length M
+    """
+    freqs = field_table.frequencies
+    min_freq = freqs.min()
+    window_duration = window_periods / min_freq
+    dt = t[1] - t[0] if len(t) > 1 else 1.0
+    window_samples = max(int(window_duration / dt), 2)
+
+    step = max(window_samples // 2, 1)
+    n_windows = max((len(t) - window_samples) // step + 1, 1)
+
+    t_positions = np.empty(n_windows)
+    positions = np.empty((n_windows, 3))
+    rotations = []
+
+    prev_pos = None
+    prev_yaw = 0.0
+
+    for i in range(n_windows):
+        start = i * step
+        end = start + window_samples
+        if end > len(t):
+            end = len(t)
+            start = max(end - window_samples, 0)
+
+        t_win = t[start:end]
+        sig_win = signal[start:end]
+        accel_win = accel[start:end]
+
+        measurements = demodulate(t_win, sig_win, freqs)
+
+        # Extract tilt from mean accelerometer over the window
+        mean_accel = accel_win.mean(axis=0)
+        tilt = tilt_from_accel(mean_accel)
+
+        # Coarse position search (rotation-invariant magnitudes)
+        coarse = field_table.query_coarse_rotated(measurements)
+
+        if prev_pos is not None:
+            dist = np.linalg.norm(coarse - prev_pos)
+            grid_spacing = (
+                (field_table.bounds[1] - field_table.bounds[0])
+                / field_table.resolution
+            )
+            initial_pos = prev_pos if dist < grid_spacing * 3 else coarse
+        else:
+            initial_pos = coarse
+
+        # Estimate initial yaw: un-tilt measurements, then use SVD
+        # to find the remaining rotation (which should be mostly yaw)
+        tilt_inv = tilt.inv()
+        meas_untilted = np.array([tilt_inv.apply(m) for m in measurements])
+        lab_fields = field_table.field_at(initial_pos)
+        yaw_rotvec = _estimate_rotation(lab_fields, meas_untilted)
+        init_yaw = Rotation.from_rotvec(yaw_rotvec).as_euler("xyz")[2]
+
+        # 4-DOF refinement (position + yaw; tilt from IMU)
+        pos, rot = _refine_4dof(
+            field_table, measurements, initial_pos,
+            tilt, initial_yaw=init_yaw,
+        )
+
+        t_positions[i] = (t_win[0] + t_win[-1]) / 2.0
+        positions[i] = pos
+        rotations.append(rot)
+        prev_pos = pos
+        # Extract yaw from the solved rotation for next window's initial guess
+        prev_yaw = rot.as_euler("xyz")[2]
+
+    return t_positions, positions, rotations
+
+
+# ------------------------------------------------------------------
+# 6-DOF inversion (position + orientation, no IMU)
 # ------------------------------------------------------------------
 
 def _estimate_rotation(lab_fields, sensor_fields):

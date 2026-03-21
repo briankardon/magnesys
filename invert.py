@@ -26,7 +26,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from source import project
-from source.inversion import FieldTable, invert_trace, invert_trace_6dof
+from source.inversion import (FieldTable, invert_trace, invert_trace_6dof,
+                               invert_trace_imu)
 
 
 def main():
@@ -73,12 +74,18 @@ def main():
     t = data[:, 0]
     signal = data[:, 4:7]  # Bx, By, Bz
 
-    # Detect if rotation was applied (12 columns = has quaternion ground truth)
+    # Detect features from column count:
+    #  8 cols: t,x,y,z,Bx,By,Bz,Bmag (no rotation)
+    # 12 cols: + qw,qx,qy,qz (rotation, no IMU)
+    # 18 cols: + qw,qx,qy,qz,ax,ay,az,gx,gy,gz (rotation + IMU)
     has_rotation = data.shape[1] >= 12
-    if has_rotation:
-        print(f"  {len(t)} samples, {t[-1] - t[0]:.4f} s duration (with rotation)")
-    else:
-        print(f"  {len(t)} samples, {t[-1] - t[0]:.4f} s duration")
+    has_imu = data.shape[1] >= 18
+    mode_str = ""
+    if has_imu:
+        mode_str = " (rotation + IMU)"
+    elif has_rotation:
+        mode_str = " (rotation, no IMU)"
+    print(f"  {len(t)} samples, {t[-1] - t[0]:.4f} s duration{mode_str}")
 
     # Determine bounds
     if args.bounds:
@@ -102,7 +109,16 @@ def main():
     print(f"  {len(table.frequencies)} frequency channels: {table.frequencies}")
 
     # Invert
-    if has_rotation:
+    est_rotations = None
+    if has_imu:
+        accel = data[:, 12:15]  # ax, ay, az
+        print(f"Inverting 4-DOF with IMU (window={args.window_periods} periods)...")
+        t0 = time.time()
+        t_pos, positions, est_rotations = invert_trace_imu(
+            table, t, signal, accel, window_periods=args.window_periods,
+        )
+        print(f"  Done in {time.time() - t0:.1f} s")
+    elif has_rotation:
         print(f"Inverting 6-DOF (window={args.window_periods} periods)...")
         t0 = time.time()
         t_pos, positions, est_rotations = invert_trace_6dof(

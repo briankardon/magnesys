@@ -177,7 +177,17 @@ class ExportFieldVsTimeDialog(QDialog):
 
         # Random rotation option
         self._rotation_cb = QCheckBox("Apply random sensor rotation")
+        self._rotation_cb.toggled.connect(self._on_rotation_toggled)
         layout.addWidget(self._rotation_cb)
+
+        self._imu_cb = QCheckBox("Include 6-axis IMU data")
+        self._imu_cb.setEnabled(False)  # enabled only when rotation is on
+        layout.addWidget(self._imu_cb)
+
+    def _on_rotation_toggled(self, checked):
+        self._imu_cb.setEnabled(checked)
+        if not checked:
+            self._imu_cb.setChecked(False)
 
         # Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
@@ -214,6 +224,9 @@ class ExportFieldVsTimeDialog(QDialog):
 
     def apply_rotation(self):
         return self._rotation_cb.isChecked()
+
+    def include_imu(self):
+        return self._imu_cb.isChecked()
 
     def sample_count(self):
         return max(int(self.duration() * self.sampling_rate()) + 1, 2)
@@ -1824,6 +1837,7 @@ class Visualizer:
         speed = dlg.speed()
         rate = dlg.sampling_rate()
         use_rotation = dlg.apply_rotation()
+        use_imu = dlg.include_imu()
         path_length = sp.length
 
         # Ask for output file
@@ -1883,32 +1897,47 @@ class Visualizer:
             By_total += by
             Bz_total += bz
 
-        # Optionally apply sensor rotation
-        from .inversion import generate_rotations, apply_rotation_to_field
+        # Optionally apply sensor rotation and generate IMU data
+        from .inversion import (generate_rotations, apply_rotation_to_field,
+                                generate_imu_data)
 
         rotations = None
+        accel_data = None
+        gyro_data = None
         if use_rotation:
             rotations = generate_rotations(points, n_samples)
             Bx_total, By_total, Bz_total = apply_rotation_to_field(
                 Bx_total, By_total, Bz_total, rotations,
             )
+            if use_imu:
+                dt = duration / max(n_samples - 1, 1)
+                accel_data, gyro_data = generate_imu_data(rotations, dt)
 
         Bmag = np.sqrt(Bx_total**2 + By_total**2 + Bz_total**2)
 
         # Write CSV
         with open(csv_path, "w") as f:
-            rot_note = ", rotated=true" if use_rotation else ""
+            notes = []
+            if use_rotation:
+                notes.append("rotated=true")
+            if use_imu:
+                notes.append("imu=true")
+            note_str = ", " + ", ".join(notes) if notes else ""
             f.write(
                 f"# Magnesys v{project.CURRENT_VERSION} — "
                 f"field vs time along path, {n_samples} samples, "
                 f"rate {rate:.6g} Hz, duration {duration:.6g} s, "
                 f"speed {speed:.6g} m/s, "
-                f"path length {path_length:.6g} m{rot_note}\n"
+                f"path length {path_length:.6g} m{note_str}\n"
             )
+            # Build header
+            cols = ["t", "x", "y", "z", "Bx", "By", "Bz", "Bmag"]
             if use_rotation:
-                f.write("t,x,y,z,Bx,By,Bz,Bmag,qw,qx,qy,qz\n")
-            else:
-                f.write("t,x,y,z,Bx,By,Bz,Bmag\n")
+                cols += ["qw", "qx", "qy", "qz"]
+            if use_imu:
+                cols += ["ax", "ay", "az", "gx", "gy", "gz"]
+            f.write(",".join(cols) + "\n")
+
             for i in range(n_samples):
                 row = (
                     f"{t_samples[i]:.8e},"
@@ -1919,6 +1948,13 @@ class Visualizer:
                 if use_rotation:
                     q = rotations[i].as_quat(scalar_first=True)
                     row += f",{q[0]:.8e},{q[1]:.8e},{q[2]:.8e},{q[3]:.8e}"
+                if use_imu:
+                    row += (
+                        f",{accel_data[i, 0]:.8e},{accel_data[i, 1]:.8e},"
+                        f"{accel_data[i, 2]:.8e}"
+                        f",{gyro_data[i, 0]:.8e},{gyro_data[i, 1]:.8e},"
+                        f"{gyro_data[i, 2]:.8e}"
+                    )
                 f.write(row + "\n")
 
     # ------------------------------------------------------------------
