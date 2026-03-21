@@ -245,24 +245,48 @@ position. This inverts the order of operations vs. the previous approach.
 
 ---
 
-## Summary of accuracy floors (noiseless)
+### Experiment 13: Fixed window duration, varying frequency (cage scale)
 
-| Scenario | Position error (median) | Orientation error (median) |
-|----------|------------------------|---------------------------|
-| 3-DOF, small scale (12cm) | **3.3 mm** | n/a |
-| 3-DOF, cage scale (50cm) | **10.9 mm** | n/a |
-| 6-DOF, small scale (12cm) | **9.4 mm** | **31.8°** |
-| 6-DOF, cage scale (50cm) | **23–26 mm** | **29°** |
+**Key insight (from user):** Previous frequency sweep (Exp. 11) kept
+period count constant (3 periods), so higher frequencies got shorter
+windows with the same number of cycles — no improvement.
+This test keeps the **window duration fixed at 30ms** so higher
+frequencies get more cycles and thus cleaner demodulation.
+
+| Frequencies | Periods in 30ms | 3-DOF pos. error (median) | 3-DOF pos. error (max) | 6-DOF pos. error (median) | Orient. error (median) |
+|-------------|----------------|--------------------------|----------------------|--------------------------|----------------------|
+| 100/137/173 Hz | 3.0 | 13.1 mm | 24.1 mm | 26.2 mm | 29.0° |
+| 300/411/519 Hz | 9.0 | 8.4 mm | 16.8 mm | 15.2 mm | 27.5° |
+| 500/687/873 Hz | 15.0 | **5.1 mm** | 9.8 mm | **10.2 mm** | 28.0° |
+| 1000/1373/1747 Hz | 30.0 | **1.9 mm** | 4.0 mm | **3.9 mm** | 28.1° |
+
+**Findings:**
+1. **Position accuracy scales inversely with frequency** when window duration is fixed. More periods = cleaner demodulation = better position. The previous "geometric floor" was actually a demodulation cross-talk floor.
+2. **At 1 kHz: 1.9mm (3-DOF), 3.9mm (6-DOF)** — well under the 1cm target, even with 30° sensor rotation.
+3. **Orientation accuracy stays constant at ~28°** regardless of frequency — it's limited by the geometric ambiguity of 3-axis gradient fields, not demodulation quality.
+4. **Max error at 1 kHz is only 4mm (3-DOF)** — the system is well-conditioned across the entire tracking volume at this frequency.
+
+---
+
+## Summary of best results (noiseless)
+
+| Scenario | Position error (median) | Position error (max) | Orientation error (median) |
+|----------|------------------------|---------------------|---------------------------|
+| 3-DOF, 100 Hz, small scale | **3.3 mm** | 7.6 mm | n/a |
+| 3-DOF, 100 Hz, cage scale | 13.1 mm | 24.1 mm | n/a |
+| 3-DOF, 1 kHz, cage scale | **1.9 mm** | **4.0 mm** | n/a |
+| 6-DOF, 100 Hz, cage scale | 26.2 mm | 57.9 mm | 29.0° |
+| 6-DOF, 1 kHz, cage scale | **3.9 mm** | — | **28.1°** |
 
 ## Key findings
 
-1. **Accuracy floor is geometric, not temporal.** Higher frequencies don't improve position accuracy — the ~13mm (3-DOF) / ~25mm (6-DOF) floor is set by the field geometry and grid resolution.
+1. **Demodulation cross-talk is the main position accuracy bottleneck.** More lock-in periods per window dramatically improves accuracy. Higher excitation frequencies achieve this without increasing the window duration.
 2. **Orientation-first initialization is critical** for robust 6-DOF convergence across frequencies.
-3. **Max errors are at cage edges** where field patterns are most nonlinear. A confidence metric based on optimizer residual could flag these.
+3. **Orientation accuracy (~28°) is limited by field geometry**, not demodulation — more coil pairs or IMU assistance would be needed to improve it.
+4. **Max errors are at cage edges** where field patterns are most nonlinear. A confidence metric based on optimizer residual could flag these.
 
 ## Next steps
 
-1. **Noise injection** — sensor noise may dominate over the geometric floor
+1. **Noise injection** — sensor noise may dominate over the demodulation floor at 1 kHz
 2. **Confidence metric** — output per-estimate quality based on optimizer residual
-3. **Grid resolution** — test whether finer grids reduce the geometric floor
 3. **More coil pairs** — 4th pair for better orientation conditioning
