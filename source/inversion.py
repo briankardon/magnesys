@@ -888,8 +888,49 @@ def _refine_6dof(field_table, measurements, initial_pos, initial_rotvec=None):
     return pos, rot
 
 
+def _estimate_rotation_from_directions(measurements):
+    """Estimate sensor rotation from demodulated field directions alone.
+
+    For an anti-Helmholtz gradient setup, channel k's field is dominated
+    by the k-th axis direction.  The demodulated vectors are those axis
+    directions rotated into the sensor frame, so their directions alone
+    give a good rotation estimate without knowing position.
+
+    Parameters
+    ----------
+    measurements : ndarray, shape (n_channels, 3)
+        Demodulated field vectors in the sensor frame.
+
+    Returns
+    -------
+    rotvec : ndarray, shape (3,)
+    """
+    # Use the unit directions of the measurements as the sensor-frame
+    # basis vectors.  The lab-frame references are the cardinal axes
+    # (assuming channels are ordered X, Y, Z gradient pairs).
+    n_ch = len(measurements)
+    lab_dirs = np.eye(3)[:n_ch]  # [1,0,0], [0,1,0], [0,0,1]
+
+    sensor_dirs = np.empty_like(measurements[:n_ch])
+    for k in range(min(n_ch, 3)):
+        norm = np.linalg.norm(measurements[k])
+        if norm > 0:
+            sensor_dirs[k] = measurements[k] / norm
+        else:
+            sensor_dirs[k] = lab_dirs[k]
+
+    return _estimate_rotation(lab_dirs[:min(n_ch, 3)],
+                              sensor_dirs[:min(n_ch, 3)])
+
+
 def invert_trace_6dof(field_table, t, signal, window_periods=1.0):
     """Invert a rotated magnetometer time series to position + orientation.
+
+    Strategy: orientation-first approach.
+    1. Estimate rotation from field directions (no position needed)
+    2. Un-rotate measurements into lab frame
+    3. Coarse 3-DOF position search on un-rotated measurements
+    4. Joint 6-DOF refinement from this good starting point
 
     Parameters
     ----------
@@ -933,8 +974,19 @@ def invert_trace_6dof(field_table, t, signal, window_periods=1.0):
 
         measurements = demodulate(t_win, sig_win, freqs)
 
-        # Coarse position search using rotation-invariant magnitudes
-        coarse = field_table.query_coarse_rotated(measurements)
+        # Step 1: Estimate rotation from field directions alone
+        if prev_rotvec is not None:
+            init_rotvec = prev_rotvec
+        else:
+            init_rotvec = _estimate_rotation_from_directions(measurements)
+
+        # Step 2: Un-rotate measurements into approximate lab frame
+        R_est = Rotation.from_rotvec(init_rotvec)
+        R_inv = R_est.inv()
+        meas_lab = np.array([R_inv.apply(m) for m in measurements])
+
+        # Step 3: Coarse position search on un-rotated measurements
+        coarse = field_table.query_coarse(meas_lab)
 
         if prev_pos is not None:
             dist = np.linalg.norm(coarse - prev_pos)
@@ -946,15 +998,11 @@ def invert_trace_6dof(field_table, t, signal, window_periods=1.0):
         else:
             initial_pos = coarse
 
-        # Estimate initial rotation from coarse position using SVD
-        # (Wahba's problem: find R that best maps lab fields to measurements)
-        if prev_rotvec is not None:
-            init_rotvec = prev_rotvec
-        else:
-            lab_fields = field_table.field_at(initial_pos)
-            init_rotvec = _estimate_rotation(lab_fields, measurements)
+        # Step 4: Refine rotation estimate using the coarse position
+        lab_fields = field_table.field_at(initial_pos)
+        init_rotvec = _estimate_rotation(lab_fields, measurements)
 
-        # 6-DOF refinement
+        # Step 5: Joint 6-DOF refinement
         pos, rot = _refine_6dof(
             field_table, measurements, initial_pos,
             initial_rotvec=init_rotvec,

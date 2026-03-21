@@ -218,6 +218,33 @@ Sampling rate scaled to 10× highest frequency. Cage scale (0.5m), 30° rotation
 
 ---
 
+### Experiment 12: Orientation-first 6-DOF (cage scale, frequency sweep)
+
+**Key insight (from user):** Demodulated field directions approximate the
+rotated basis vectors — you can estimate orientation *before* knowing
+position. This inverts the order of operations vs. the previous approach.
+
+**New pipeline:**
+1. Estimate rotation from field directions alone (SVD on unit vectors vs cardinal axes)
+2. Un-rotate measurements into approximate lab frame
+3. Coarse 3-DOF position search on un-rotated measurements (direction-aware KD-tree)
+4. Refine rotation using coarse position (SVD with actual field at that position)
+5. Joint 6-DOF refinement from this good starting point
+
+| Frequencies | Window | Position median | Position max | Orient. median | Orient. max |
+|-------------|--------|----------------|-------------|----------------|-------------|
+| 100/137/173 Hz | 30.0 ms | 26.2 mm | 57.9 mm | 29.0° | 60.2° |
+| 300/411/519 Hz | 10.0 ms | **23.2 mm** | 91.0 mm | **28.6°** | 63.8° |
+| 500/687/873 Hz | 6.0 ms | 26.2 mm | 90.0 mm | 29.0° | 60.4° |
+
+**Findings:**
+1. **Fixed the 6-DOF failure at higher frequencies.** Previous approach gave 460mm at 300+ Hz; orientation-first gives 23-26mm across all frequencies tested.
+2. **Position accuracy roughly constant at ~25mm median** regardless of frequency — confirms the floor is geometric, not temporal.
+3. **Max errors (90mm) occur at cage edges** where field directions deviate most from cardinal axes, degrading the direction-based rotation estimate.
+4. **Orientation accuracy ~29° median** — consistent across frequencies.
+
+---
+
 ## Summary of accuracy floors (noiseless)
 
 | Scenario | Position (median) | Orientation (median) |
@@ -225,14 +252,17 @@ Sampling rate scaled to 10× highest frequency. Cage scale (0.5m), 30° rotation
 | 3-DOF, small scale (12cm) | **3.3 mm** | n/a |
 | 3-DOF, cage scale (50cm) | **10.9 mm** | n/a |
 | 6-DOF, small scale (12cm) | **9.4 mm** | **31.8°** |
-| 6-DOF, cage scale (50cm) | **26.2 mm** | **29.0°** |
+| 6-DOF, cage scale (50cm) | **23–26 mm** | **29°** |
 
-## Key bottleneck
+## Key findings
 
-**Demodulation window duration.** At 100 Hz lowest frequency, a 3-period window = 30ms. At 10 cm/s bird speed, the sensor moves 3mm during the window. This motion blurs the demodulated measurement, setting a hard accuracy floor. Higher excitation frequencies would directly improve this.
+1. **Accuracy floor is geometric, not temporal.** Higher frequencies don't improve position accuracy — the ~13mm (3-DOF) / ~25mm (6-DOF) floor is set by the field geometry and grid resolution.
+2. **Orientation-first initialization is critical** for robust 6-DOF convergence across frequencies.
+3. **Max errors are at cage edges** where field patterns are most nonlinear. A confidence metric based on optimizer residual could flag these.
 
 ## Next steps
 
-1. **Noise injection** — sensor noise may dominate over the motion blur floor
-2. **Higher frequencies** — e.g. 500/687/873 Hz → 6ms windows → 0.6mm motion blur
+1. **Noise injection** — sensor noise may dominate over the geometric floor
+2. **Confidence metric** — output per-estimate quality based on optimizer residual
+3. **Grid resolution** — test whether finer grids reduce the geometric floor
 3. **More coil pairs** — 4th pair for better orientation conditioning
