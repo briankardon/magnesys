@@ -39,63 +39,176 @@ from .path import LineSegmentPath, PolylinePath, SplinePath
 class ExportFieldAlongPathDialog(QDialog):
     """Dialog for configuring field-along-path CSV export."""
 
-    def __init__(self, path_length, parent=None):
+    def __init__(self, sample_paths, selected_index=0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Export field along path")
-        self._path_length = path_length
+        self._sample_paths = sample_paths
 
         layout = QVBoxLayout(self)
-
-        # Sampling interval
         form = QFormLayout()
 
+        # Path selector
+        self._path_combo = QComboBox()
+        for j in range(len(sample_paths)):
+            self._path_combo.addItem(f"Path {j}")
+        self._path_combo.setCurrentIndex(selected_index)
+        self._path_combo.currentIndexChanged.connect(self._on_path_changed)
+        form.addRow("Path:", self._path_combo)
+
+        # Sampling interval
         self._interval_spin = QDoubleSpinBox()
         self._interval_spin.setDecimals(4)
         self._interval_spin.setSuffix(" m")
-        self._interval_spin.setRange(1e-6, path_length)
-        # Default: ~200 points
-        default_interval = path_length / 200 if path_length > 0 else 0.001
-        self._interval_spin.setValue(default_interval)
-        self._interval_spin.setSingleStep(default_interval * 0.1)
+        self._interval_spin.valueChanged.connect(self._update_readouts)
         form.addRow("Sampling interval:", self._interval_spin)
 
-        # Point count readout
+        # Readouts
         self._count_label = QLabel()
         form.addRow("Points:", self._count_label)
 
-        # Path length readout
-        form.addRow("Path length:", QLabel(f"{path_length:.6g} m"))
+        self._length_label = QLabel()
+        form.addRow("Path length:", self._length_label)
 
         layout.addLayout(form)
 
         # Buttons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Cancel
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self._export_btn = buttons.addButton(
             "Export...", QDialogButtonBox.ButtonRole.AcceptRole,
         )
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
-        # AcceptRole doesn't auto-connect to accept(), wire it manually
         self._export_btn.clicked.connect(self.accept)
         layout.addWidget(buttons)
 
-        # Update count on interval change
-        self._interval_spin.valueChanged.connect(self._update_count)
-        self._update_count()
+        self._on_path_changed(selected_index)
 
-    def _update_count(self):
-        n = self.point_count()
-        self._count_label.setText(str(n))
+    def _on_path_changed(self, index):
+        sp = self._sample_paths[index]
+        path_length = sp.length
+        self._interval_spin.blockSignals(True)
+        self._interval_spin.setRange(1e-6, max(path_length, 1e-6))
+        default_interval = path_length / 200 if path_length > 0 else 0.001
+        self._interval_spin.setValue(default_interval)
+        self._interval_spin.setSingleStep(default_interval * 0.1)
+        self._interval_spin.blockSignals(False)
+        self._length_label.setText(f"{path_length:.6g} m")
+        self._update_readouts()
+
+    def _update_readouts(self):
+        self._count_label.setText(str(self.point_count()))
+
+    def selected_path_index(self):
+        return self._path_combo.currentIndex()
 
     def interval(self):
         return self._interval_spin.value()
 
     def point_count(self):
-        if self._path_length <= 0:
+        sp = self._sample_paths[self._path_combo.currentIndex()]
+        path_length = sp.length
+        if path_length <= 0:
             return 0
-        return max(int(self._path_length / self._interval_spin.value()) + 1, 2)
+        return max(int(path_length / self._interval_spin.value()) + 1, 2)
+
+
+class ExportFieldVsTimeDialog(QDialog):
+    """Dialog for configuring field-vs-time CSV export."""
+
+    def __init__(self, sample_paths, selected_index, max_freq, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Export field vs. time along path")
+        self._sample_paths = sample_paths
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        # Path selector
+        self._path_combo = QComboBox()
+        for j in range(len(sample_paths)):
+            self._path_combo.addItem(f"Path {j}")
+        self._path_combo.setCurrentIndex(selected_index)
+        self._path_combo.currentIndexChanged.connect(self._update_readouts)
+        form.addRow("Path:", self._path_combo)
+
+        # Probe speed
+        self._speed_spin = QDoubleSpinBox()
+        self._speed_spin.setDecimals(4)
+        self._speed_spin.setSuffix(" m/s")
+        self._speed_spin.setRange(1e-6, 1e6)
+        self._speed_spin.setValue(0.1)  # 10 cm/s — reasonable for a small bird
+        self._speed_spin.setSingleStep(0.01)
+        self._speed_spin.valueChanged.connect(self._update_readouts)
+        form.addRow("Probe speed:", self._speed_spin)
+
+        # Duration
+        self._duration_spin = QDoubleSpinBox()
+        self._duration_spin.setDecimals(4)
+        self._duration_spin.setSuffix(" s")
+        self._duration_spin.setRange(1e-6, 1e6)
+        self._duration_spin.setValue(1.0)
+        self._duration_spin.setSingleStep(0.1)
+        self._duration_spin.valueChanged.connect(self._update_readouts)
+        form.addRow("Duration:", self._duration_spin)
+
+        # Sampling rate
+        default_rate = max(max_freq * 10, 1000.0) if max_freq > 0 else 1000.0
+        self._rate_spin = QDoubleSpinBox()
+        self._rate_spin.setDecimals(1)
+        self._rate_spin.setSuffix(" Hz")
+        self._rate_spin.setRange(1.0, 1e6)
+        self._rate_spin.setValue(default_rate)
+        self._rate_spin.setSingleStep(default_rate * 0.1)
+        self._rate_spin.valueChanged.connect(self._update_readouts)
+        form.addRow("Sampling rate:", self._rate_spin)
+
+        # Readouts
+        self._samples_label = QLabel()
+        form.addRow("Samples:", self._samples_label)
+
+        self._length_label = QLabel()
+        form.addRow("Distance / path:", self._length_label)
+
+        self._traversals_label = QLabel()
+        form.addRow("Traversals:", self._traversals_label)
+
+        layout.addLayout(form)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self._export_btn = buttons.addButton(
+            "Export...", QDialogButtonBox.ButtonRole.AcceptRole,
+        )
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        self._export_btn.clicked.connect(self.accept)
+        layout.addWidget(buttons)
+
+        self._update_readouts()
+
+    def _update_readouts(self):
+        sp = self._sample_paths[self._path_combo.currentIndex()]
+        path_len = sp.length
+        self._samples_label.setText(str(self.sample_count()))
+        total_dist = self._speed_spin.value() * self._duration_spin.value()
+        self._length_label.setText(f"{total_dist:.3f} / {path_len:.3f} m")
+        traversals = total_dist / path_len if path_len > 0 else 0
+        self._traversals_label.setText(f"{traversals:.1f}")
+
+    def selected_path_index(self):
+        return self._path_combo.currentIndex()
+
+    def speed(self):
+        return self._speed_spin.value()
+
+    def duration(self):
+        return self._duration_spin.value()
+
+    def sampling_rate(self):
+        return self._rate_spin.value()
+
+    def sample_count(self):
+        return max(int(self.duration() * self.sampling_rate()) + 1, 2)
 
 
 class Visualizer:
@@ -918,6 +1031,10 @@ class Visualizer:
         export_path_action.triggered.connect(self._on_export_field_along_path)
         export_menu.addAction(export_path_action)
 
+        export_time_action = QAction("Export field vs. &time...", window)
+        export_time_action.triggered.connect(self._on_export_field_vs_time)
+        export_menu.addAction(export_time_action)
+
         # ---- Edit menu ----
         edit_menu = menu_bar.addMenu("&Edit")
 
@@ -1461,14 +1578,16 @@ class Visualizer:
             )
             return
 
-        sp = self._sample_paths[self._selected_path_index]
-        path_length = sp.length
-
-        dlg = ExportFieldAlongPathDialog(path_length, parent=self._window)
+        dlg = ExportFieldAlongPathDialog(
+            self._sample_paths, self._selected_path_index,
+            parent=self._window,
+        )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
+        sp = self._sample_paths[dlg.selected_path_index()]
         n_points = dlg.point_count()
+        path_length = sp.length
 
         # Ask for output file
         csv_path, _ = QFileDialog.getSaveFileName(
@@ -1504,6 +1623,119 @@ class Visualizer:
                 f.write(
                     f"{x[i]:.8e},{y[i]:.8e},{z[i]:.8e},"
                     f"{Bx[i]:.8e},{By[i]:.8e},{Bz[i]:.8e},{Bmag[i]:.8e}\n"
+                )
+
+    def _on_export_field_vs_time(self):
+        """Export → Export field vs. time callback."""
+        if not self._sample_paths:
+            QMessageBox.information(
+                self._window,
+                "No sample path",
+                "Add a sample path first (Edit \u2192 Add path).",
+            )
+            return
+
+        freqs = [loop.frequency for loop in self.simulation.loops]
+        ac_freqs = [f for f in freqs if f > 0]
+        if not ac_freqs:
+            QMessageBox.information(
+                self._window,
+                "No AC sources",
+                "Set a nonzero frequency on at least one current source.",
+            )
+            return
+
+        max_freq = max(ac_freqs)
+
+        dlg = ExportFieldVsTimeDialog(
+            self._sample_paths, self._selected_path_index,
+            max_freq, parent=self._window,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        sp = self._sample_paths[dlg.selected_path_index()]
+        n_samples = dlg.sample_count()
+        duration = dlg.duration()
+        speed = dlg.speed()
+        rate = dlg.sampling_rate()
+        path_length = sp.length
+
+        # Ask for output file
+        csv_path, _ = QFileDialog.getSaveFileName(
+            self._window,
+            "Export CSV",
+            "",
+            "CSV files (*.csv);;All files (*)",
+        )
+        if not csv_path:
+            return
+        if not csv_path.lower().endswith(".csv"):
+            csv_path += ".csv"
+
+        t_samples = np.linspace(0, duration, n_samples)
+
+        # Compute distance along path at each time step, bouncing
+        # (ping-pong) at the endpoints.
+        raw_dist = speed * t_samples
+        if path_length > 0:
+            # Triangle wave: 0 → L → 0 → L → ...
+            phase = raw_dist / path_length
+            # sawtooth in [0, 2]: frac of a full bounce cycle
+            cycle = np.mod(phase, 2.0)
+            # bounce: going forward on [0,1), backward on [1,2)
+            frac = np.where(cycle <= 1.0, cycle, 2.0 - cycle)
+        else:
+            frac = np.zeros(n_samples)
+
+        # Sample the path at each fractional position
+        n_dense = max(1000, n_samples)
+        dense_pts = sp.get_points(n_dense)
+        idx = np.clip((frac * (n_dense - 1)).astype(int), 0, n_dense - 1)
+        points = dense_pts[idx]
+        x, y, z = points[:, 0], points[:, 1], points[:, 2]
+
+        # Precompute spatial field per source, then modulate by time
+        Bx_total = np.zeros(n_samples)
+        By_total = np.zeros(n_samples)
+        Bz_total = np.zeros(n_samples)
+
+        for loop in self.simulation.loops:
+            bx, by, bz = loop.magnetic_field(x, y, z)
+            bx = np.asarray(bx).ravel()
+            by = np.asarray(by).ravel()
+            bz = np.asarray(bz).ravel()
+
+            f = loop.frequency
+            phi = loop.phase
+            if f != 0.0 or phi != 0.0:
+                mod = np.cos(2.0 * np.pi * f * t_samples + phi)
+                bx = bx * mod
+                by = by * mod
+                bz = bz * mod
+
+            Bx_total += bx
+            By_total += by
+            Bz_total += bz
+
+        Bmag = np.sqrt(Bx_total**2 + By_total**2 + Bz_total**2)
+
+        # Write CSV
+        with open(csv_path, "w") as f:
+            f.write(
+                f"# Magnesys v{project.CURRENT_VERSION} — "
+                f"field vs time along path, {n_samples} samples, "
+                f"rate {rate:.6g} Hz, duration {duration:.6g} s, "
+                f"speed {speed:.6g} m/s, "
+                f"path length {path_length:.6g} m\n"
+            )
+            f.write("t,x,y,z,Bx,By,Bz,Bmag\n")
+            for i in range(n_samples):
+                f.write(
+                    f"{t_samples[i]:.8e},"
+                    f"{x[i]:.8e},{y[i]:.8e},{z[i]:.8e},"
+                    f"{Bx_total[i]:.8e},{By_total[i]:.8e},{Bz_total[i]:.8e},"
+                    f"{Bmag[i]:.8e}\n"
                 )
 
     # ------------------------------------------------------------------
