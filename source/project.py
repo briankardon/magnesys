@@ -4,12 +4,14 @@ import json
 
 from .path import SamplePath
 from .simulation import Simulation
+from .trajectory import Trajectory
 
 MAG_FILE_FILTER = "Magnesys project (*.mag)"
 CURRENT_VERSION = 3
 
 
-def save(path, simulation, viz_settings=None, sample_paths=None):
+def save(path, simulation, viz_settings=None, sample_paths=None,
+         trajectories=None):
     """Save a simulation and optional visualization settings to a .mag file.
 
     Parameters
@@ -22,6 +24,8 @@ def save(path, simulation, viz_settings=None, sample_paths=None):
         Visualization state (grid resolution, camera, slice plane, etc.).
     sample_paths : list of SamplePath, optional
         Sample paths to serialize alongside the simulation.
+    trajectories : list of Trajectory, optional
+        Trajectories to serialize alongside the simulation.
     """
     data = {
         "magnesys_version": CURRENT_VERSION,
@@ -31,6 +35,8 @@ def save(path, simulation, viz_settings=None, sample_paths=None):
         data["visualization"] = viz_settings
     if sample_paths:
         data["sample_paths"] = [p.to_dict() for p in sample_paths]
+    if trajectories:
+        data["trajectories"] = [t.to_dict() for t in trajectories]
 
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
@@ -72,4 +78,8 @@ def load(path):
         # v2: single path → wrap in list
         sample_paths = [SamplePath.create_from_dict(data["sample_path"])]
 
-    return simulation, viz_settings, sample_paths
+    trajectories = []
+    if "trajectories" in data:
+        trajectories = [Trajectory.from_dict(d) for d in data["trajectories"]]
+
+    return simulation, viz_settings, sample_paths, trajectories

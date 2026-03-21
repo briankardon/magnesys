@@ -34,6 +34,7 @@ from pyvistaqt import QtInteractor
 
 from . import project
 from .path import LineSegmentPath, PolylinePath, SplinePath
+from .trajectory import Trajectory
 
 
 class ExportFieldAlongPathDialog(QDialog):
@@ -265,6 +266,10 @@ class Visualizer:
         self._locked_log_min_mag = None  # log-mode reference floor when locked
 
         self._probe_actors = []  # 3D probe markers along paths
+
+        # Trajectories (static 3D polylines, not editable)
+        self._trajectories = []
+        self._trajectory_actors = []
 
         # Slice plane state
         self._slice_enabled = False
@@ -684,6 +689,38 @@ class Visualizer:
 
             model.appendRow([root, root_val])
 
+        # ---- Trajectory rows ----
+        for j, traj in enumerate(self._trajectories):
+            label = f"Trajectory {j} ({traj.label})"
+
+            root = QStandardItem(label)
+            root.setForeground(QColor(traj.color))
+            root_val = QStandardItem("")
+            root.setEditable(False)
+            root_val.setEditable(False)
+            root.setData({"kind": "trajectory", "index": j}, _KEY_ROLE)
+
+            # Read-only properties
+            key_item = QStandardItem("Label")
+            val_item = QStandardItem(traj.label)
+            key_item.setEditable(False)
+            val_item.setEditable(False)
+            root.appendRow([key_item, val_item])
+
+            key_item = QStandardItem("Points")
+            val_item = QStandardItem(str(len(traj.points)))
+            key_item.setEditable(False)
+            val_item.setEditable(False)
+            root.appendRow([key_item, val_item])
+
+            key_item = QStandardItem("Length (m)")
+            val_item = QStandardItem(f"{traj.length:.4g}")
+            key_item.setEditable(False)
+            val_item.setEditable(False)
+            root.appendRow([key_item, val_item])
+
+            model.appendRow([root, root_val])
+
         # Restore expanded state
         for row in range(model.rowCount()):
             root_idx = model.index(row, 0)
@@ -1064,6 +1101,10 @@ class Visualizer:
         add_spline.triggered.connect(self._on_add_spline_path)
         add_path_menu.addAction(add_spline)
 
+        import_traj_action = QAction("Import &trajectory CSV...", window)
+        import_traj_action.triggered.connect(self._on_import_trajectory_csv)
+        edit_menu.addAction(import_traj_action)
+
         edit_menu.addSeparator()
 
         delete_action = QAction("&Delete selected object", window)
@@ -1291,15 +1332,116 @@ class Visualizer:
             self._update_plot()
 
     def _on_clear_all(self):
-        """Remove all loops and paths."""
+        """Remove all loops, paths, and trajectories."""
         self.simulation.loops.clear()
         self._teardown_all_path_visuals()
         self._clear_path_entries()
+        self._remove_all_trajectory_actors()
+        self._trajectories.clear()
         self._selected_path_index = 0
         self._rebuild_scene()
         self._refresh_path_selector()
         self._update_plot()
         self._update_time_range()
+
+    # ------------------------------------------------------------------
+    # Trajectory management
+    # ------------------------------------------------------------------
+
+    def _add_trajectory(self, traj):
+        """Add a trajectory and update the 3D view and tree."""
+        self._trajectories.append(traj)
+        self._create_trajectory_actor(len(self._trajectories) - 1)
+        self._refresh_tree()
+
+    def _delete_trajectory(self, idx):
+        """Remove a trajectory by index."""
+        if idx >= len(self._trajectories):
+            return
+        if idx < len(self._trajectory_actors):
+            plotter = self._plotter
+            if plotter is not None:
+                plotter.remove_actor(self._trajectory_actors[idx])
+            self._trajectory_actors.pop(idx)
+        self._trajectories.pop(idx)
+        # Rebuild remaining actors (indices shifted)
+        self._remove_all_trajectory_actors()
+        for i in range(len(self._trajectories)):
+            self._create_trajectory_actor(i)
+        self._refresh_tree()
+
+    def _create_trajectory_actor(self, idx):
+        """Render a trajectory as a 3D polyline."""
+        plotter = self._plotter
+        if plotter is None:
+            return
+        traj = self._trajectories[idx]
+        pts = traj.points
+        n = len(pts)
+        if n < 2:
+            return
+        lines = np.column_stack([
+            np.full(n - 1, 2),
+            np.arange(n - 1),
+            np.arange(1, n),
+        ])
+        poly = pv.PolyData(pts, lines=lines)
+        actor = plotter.add_mesh(
+            poly,
+            color=traj.color,
+            line_width=3.0,
+            render_lines_as_tubes=True,
+            reset_camera=False,
+        )
+        while len(self._trajectory_actors) <= idx:
+            self._trajectory_actors.append(None)
+        self._trajectory_actors[idx] = actor
+
+    def _remove_all_trajectory_actors(self):
+        """Remove all trajectory actors from the plotter."""
+        plotter = self._plotter
+        for actor in self._trajectory_actors:
+            if actor is not None and plotter is not None:
+                plotter.remove_actor(actor)
+        self._trajectory_actors.clear()
+
+    def _on_import_trajectory_csv(self):
+        """Import a trajectory from a CSV file (columns: x, y, z or t, x, y, z)."""
+        csv_path, _ = QFileDialog.getOpenFileName(
+            self._window,
+            "Import trajectory CSV",
+            "",
+            "CSV files (*.csv);;All files (*)",
+        )
+        if not csv_path:
+            return
+
+        try:
+            data = np.genfromtxt(csv_path, delimiter=",", comments="#")
+        except Exception as e:
+            QMessageBox.warning(
+                self._window, "Import error", f"Could not read CSV:\n{e}",
+            )
+            return
+
+        if data.ndim != 2 or data.shape[1] < 3:
+            QMessageBox.warning(
+                self._window, "Import error",
+                "CSV must have at least 3 columns (x, y, z).",
+            )
+            return
+
+        # If 4+ columns, assume t,x,y,z — take columns 1:4
+        # If exactly 3, assume x,y,z
+        if data.shape[1] >= 4:
+            points = data[:, 1:4]
+        else:
+            points = data[:, 0:3]
+
+        from pathlib import Path
+        name = Path(csv_path).stem
+        traj = Trajectory(points, label=name, color="#ff6600")
+        self._add_trajectory(traj)
 
     def _on_delete_selected_object(self):
         """Delete the object currently selected in the tree."""
@@ -1313,6 +1455,8 @@ class Visualizer:
                 self._rebuild_scene()
         elif kind == "path":
             self._delete_path(idx)
+        elif kind == "trajectory":
+            self._delete_trajectory(idx)
 
     def _delete_path(self, path_idx):
         """Remove a path by index, tearing down its visual."""
@@ -1408,6 +1552,11 @@ class Visualizer:
                 self._randomize_path(idx)
             elif action == delete_path_action:
                 self._delete_path(idx)
+        elif kind == "trajectory":
+            delete_action = menu.addAction("Delete trajectory")
+            action = menu.exec(self._tree_view.viewport().mapToGlobal(position))
+            if action == delete_action:
+                self._delete_trajectory(idx)
 
     # ------------------------------------------------------------------
     # Project save / load
@@ -1502,11 +1651,13 @@ class Visualizer:
         if not path:
             return
 
-        simulation, viz_settings, sample_paths = project.load(path)
+        simulation, viz_settings, sample_paths, trajectories = project.load(path)
         self._project_path = path
 
         self.simulation = simulation
         self._set_path_entries(sample_paths)
+        self._remove_all_trajectory_actors()
+        self._trajectories = trajectories
 
         plotter = self._plotter
         plotter.clear()
@@ -1531,6 +1682,10 @@ class Visualizer:
         if cam is not None:
             plotter.camera_position = cam
 
+        # Create trajectory actors
+        for i in range(len(self._trajectories)):
+            self._create_trajectory_actor(i)
+
         self._refresh_tree()
         self._refresh_path_selector()
         self._update_window_title()
@@ -1543,6 +1698,7 @@ class Visualizer:
                 self.simulation,
                 self._viz_settings_to_dict(),
                 sample_paths=self._sample_paths,
+                trajectories=self._trajectories,
             )
         else:
             self._on_file_save_as()
@@ -1565,6 +1721,7 @@ class Visualizer:
         project.save(
             path, self.simulation, self._viz_settings_to_dict(),
             sample_paths=self._sample_paths,
+            trajectories=self._trajectories,
         )
         self._update_window_title()
 
