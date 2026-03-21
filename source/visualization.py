@@ -175,6 +175,10 @@ class ExportFieldVsTimeDialog(QDialog):
 
         layout.addLayout(form)
 
+        # Random rotation option
+        self._rotation_cb = QCheckBox("Apply random sensor rotation")
+        layout.addWidget(self._rotation_cb)
+
         # Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self._export_btn = buttons.addButton(
@@ -207,6 +211,9 @@ class ExportFieldVsTimeDialog(QDialog):
 
     def sampling_rate(self):
         return self._rate_spin.value()
+
+    def apply_rotation(self):
+        return self._rotation_cb.isChecked()
 
     def sample_count(self):
         return max(int(self.duration() * self.sampling_rate()) + 1, 2)
@@ -1816,6 +1823,7 @@ class Visualizer:
         duration = dlg.duration()
         speed = dlg.speed()
         rate = dlg.sampling_rate()
+        use_rotation = dlg.apply_rotation()
         path_length = sp.length
 
         # Ask for output file
@@ -1875,25 +1883,43 @@ class Visualizer:
             By_total += by
             Bz_total += bz
 
+        # Optionally apply sensor rotation
+        from .inversion import generate_rotations, apply_rotation_to_field
+
+        rotations = None
+        if use_rotation:
+            rotations = generate_rotations(points, n_samples)
+            Bx_total, By_total, Bz_total = apply_rotation_to_field(
+                Bx_total, By_total, Bz_total, rotations,
+            )
+
         Bmag = np.sqrt(Bx_total**2 + By_total**2 + Bz_total**2)
 
         # Write CSV
         with open(csv_path, "w") as f:
+            rot_note = ", rotated=true" if use_rotation else ""
             f.write(
                 f"# Magnesys v{project.CURRENT_VERSION} — "
                 f"field vs time along path, {n_samples} samples, "
                 f"rate {rate:.6g} Hz, duration {duration:.6g} s, "
                 f"speed {speed:.6g} m/s, "
-                f"path length {path_length:.6g} m\n"
+                f"path length {path_length:.6g} m{rot_note}\n"
             )
-            f.write("t,x,y,z,Bx,By,Bz,Bmag\n")
+            if use_rotation:
+                f.write("t,x,y,z,Bx,By,Bz,Bmag,qw,qx,qy,qz\n")
+            else:
+                f.write("t,x,y,z,Bx,By,Bz,Bmag\n")
             for i in range(n_samples):
-                f.write(
+                row = (
                     f"{t_samples[i]:.8e},"
                     f"{x[i]:.8e},{y[i]:.8e},{z[i]:.8e},"
                     f"{Bx_total[i]:.8e},{By_total[i]:.8e},{Bz_total[i]:.8e},"
-                    f"{Bmag[i]:.8e}\n"
+                    f"{Bmag[i]:.8e}"
                 )
+                if use_rotation:
+                    q = rotations[i].as_quat(scalar_first=True)
+                    row += f",{q[0]:.8e},{q[1]:.8e},{q[2]:.8e},{q[3]:.8e}"
+                f.write(row + "\n")
 
     # ------------------------------------------------------------------
     # Spacing helpers

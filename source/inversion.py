@@ -22,8 +22,10 @@ The inversion uses a two-stage approach:
 """
 
 import numpy as np
+from scipy.interpolate import interp1d
 from scipy.optimize import least_squares
 from scipy.spatial import KDTree
+from scipy.spatial.transform import Rotation, Slerp
 
 
 class FieldTable:
@@ -98,6 +100,20 @@ class FieldTable:
         normalized = self.feature_vectors / self._feature_scales
         self._kdtree = KDTree(normalized)
 
+        # Rotation-invariant KD-tree: per-channel field magnitudes
+        # |B_ch| is invariant under sensor rotation
+        self._mag_features = np.empty((n_pts, n_channels))
+        for ch in range(n_channels):
+            self._mag_features[:, ch] = np.linalg.norm(
+                self.channel_fields[ch], axis=1,
+            )
+        mag_scales = np.empty(n_channels)
+        for ch in range(n_channels):
+            s = np.std(self._mag_features[:, ch])
+            mag_scales[ch] = s if s > 0 else 1.0
+        self._mag_scales = mag_scales
+        self._kdtree_mag = KDTree(self._mag_features / mag_scales)
+
     @property
     def frequencies(self):
         """Unique excitation frequencies (Hz)."""
@@ -118,6 +134,26 @@ class FieldTable:
         """
         feat = measurements.ravel() / self._feature_scales
         _, idx = self._kdtree.query(feat)
+        return self.grid_points[idx].copy()
+
+    def query_coarse_rotated(self, measurements):
+        """Find the nearest grid point using rotation-invariant features.
+
+        Uses per-channel field magnitudes which are unaffected by sensor
+        rotation.
+
+        Parameters
+        ----------
+        measurements : ndarray, shape (n_channels, 3)
+            Demodulated field vectors (in sensor frame).
+
+        Returns
+        -------
+        position : ndarray, shape (3,)
+        """
+        mags = np.linalg.norm(measurements, axis=1)
+        feat = mags / self._mag_scales
+        _, idx = self._kdtree_mag.query(feat)
         return self.grid_points[idx].copy()
 
     def field_at(self, position):
@@ -279,3 +315,276 @@ def invert_trace(field_table, t, signal, window_periods=1.0):
         prev_pos = refined
 
     return t_positions, positions
+
+
+# ------------------------------------------------------------------
+# Rotation utilities
+# ------------------------------------------------------------------
+
+def generate_rotations(path_points, n_samples, max_perturbation_deg=30.0,
+                       n_keypoints=8, seed=None):
+    """Generate smooth random rotations along a path.
+
+    The base orientation aligns the sensor's +x axis with the path tangent
+    (like a bird looking where it's going).  Smooth random roll/pitch/yaw
+    perturbations are added on top.
+
+    Parameters
+    ----------
+    path_points : ndarray, shape (N, 3)
+        Points along the path (used to compute tangent direction).
+    n_samples : int
+        Number of rotation samples to generate.
+    max_perturbation_deg : float
+        Maximum random perturbation in degrees for each Euler angle.
+    n_keypoints : int
+        Number of random keypoints for SLERP interpolation.
+        More keypoints = faster orientation changes.
+    seed : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    rotations : list of Rotation
+        Rotation objects (lab-to-sensor frame) at each sample point.
+    """
+    rng = np.random.default_rng(seed)
+
+    # Compute path tangents
+    if len(path_points) < 2:
+        return [Rotation.identity()] * n_samples
+
+    # Tangent at each sample (forward difference, normalized)
+    diffs = np.diff(path_points, axis=0)
+    # Extend last tangent
+    tangents = np.vstack([diffs, diffs[-1:]])
+    norms = np.linalg.norm(tangents, axis=1, keepdims=True)
+    norms = np.where(norms > 0, norms, 1.0)
+    tangents = tangents / norms
+
+    # Resample tangents to n_samples
+    frac_orig = np.linspace(0, 1, len(tangents))
+    frac_out = np.linspace(0, 1, n_samples)
+    tangents_resampled = np.column_stack([
+        np.interp(frac_out, frac_orig, tangents[:, i]) for i in range(3)
+    ])
+    # Re-normalize after interpolation
+    tn = np.linalg.norm(tangents_resampled, axis=1, keepdims=True)
+    tn = np.where(tn > 0, tn, 1.0)
+    tangents_resampled = tangents_resampled / tn
+
+    # Build base rotations: align +x with tangent
+    base_rotations = []
+    for tang in tangents_resampled:
+        # Rotation that takes [1,0,0] to tang
+        v = np.cross([1, 0, 0], tang)
+        c = np.dot([1, 0, 0], tang)
+        if np.linalg.norm(v) < 1e-10:
+            if c > 0:
+                base_rotations.append(Rotation.identity())
+            else:
+                base_rotations.append(Rotation.from_rotvec([0, np.pi, 0]))
+        else:
+            angle = np.arctan2(np.linalg.norm(v), c)
+            axis = v / np.linalg.norm(v)
+            base_rotations.append(Rotation.from_rotvec(axis * angle))
+
+    # Generate smooth random perturbations via SLERP between keypoints
+    max_rad = np.deg2rad(max_perturbation_deg)
+    key_fracs = np.linspace(0, 1, n_keypoints)
+    key_angles = rng.uniform(-max_rad, max_rad, size=(n_keypoints, 3))
+    # Ensure start/end are mild
+    key_angles[0] *= 0.3
+    key_angles[-1] *= 0.3
+    key_rots = Rotation.from_euler("xyz", key_angles)
+    slerp = Slerp(key_fracs, key_rots)
+    perturbations = slerp(frac_out)
+
+    # Combine: sensor_rotation = perturbation * base
+    rotations = []
+    for base, pert in zip(base_rotations, perturbations):
+        rotations.append(pert * base)
+
+    return rotations
+
+
+def apply_rotation_to_field(Bx, By, Bz, rotations):
+    """Rotate lab-frame field vectors into the sensor frame.
+
+    Parameters
+    ----------
+    Bx, By, Bz : ndarray, shape (N,)
+        Lab-frame field components.
+    rotations : list of Rotation, length N
+        Lab-to-sensor rotation at each sample.
+
+    Returns
+    -------
+    Bx_rot, By_rot, Bz_rot : ndarray, shape (N,)
+        Sensor-frame field components.
+    """
+    n = len(Bx)
+    B_lab = np.column_stack([Bx, By, Bz])
+    B_sensor = np.empty_like(B_lab)
+    for i in range(n):
+        B_sensor[i] = rotations[i].apply(B_lab[i])
+    return B_sensor[:, 0], B_sensor[:, 1], B_sensor[:, 2]
+
+
+# ------------------------------------------------------------------
+# 6-DOF inversion (position + orientation)
+# ------------------------------------------------------------------
+
+def _estimate_rotation(lab_fields, sensor_fields):
+    """Estimate rotation from lab-frame to sensor-frame fields (Wahba's problem).
+
+    Given pairs of corresponding vectors in two frames, find the rotation R
+    such that sensor_fields[k] ~ R @ lab_fields[k] for all k.
+
+    Uses SVD of the cross-covariance matrix.
+
+    Parameters
+    ----------
+    lab_fields : ndarray, shape (K, 3)
+    sensor_fields : ndarray, shape (K, 3)
+
+    Returns
+    -------
+    rotvec : ndarray, shape (3,)
+    """
+    # Cross-covariance: H = sum( sensor_k @ lab_k^T )
+    H = sensor_fields.T @ lab_fields  # (3, 3)
+    U, S, Vt = np.linalg.svd(H)
+    # Ensure proper rotation (det = +1)
+    d = np.linalg.det(U @ Vt)
+    D = np.diag([1, 1, d])
+    R = U @ D @ Vt
+    return Rotation.from_matrix(R).as_rotvec()
+
+
+def _refine_6dof(field_table, measurements, initial_pos, initial_rotvec=None):
+    """Refine position and orientation using nonlinear least squares.
+
+    Parameters
+    ----------
+    field_table : FieldTable
+    measurements : ndarray, shape (n_channels, 3)
+        Demodulated field in the sensor frame.
+    initial_pos : ndarray, shape (3,)
+    initial_rotvec : ndarray, shape (3,), optional
+        Initial rotation vector (default: identity).
+
+    Returns
+    -------
+    position : ndarray, shape (3,)
+    rotation : Rotation
+    """
+    if initial_rotvec is None:
+        initial_rotvec = np.zeros(3)
+
+    target = measurements.ravel()
+    scales = field_table._feature_scales
+
+    def residual(params):
+        pos = params[:3]
+        rotvec = params[3:6]
+        R = Rotation.from_rotvec(rotvec)
+        lab_fields = field_table.field_at(pos)  # (n_ch, 3)
+        # Rotate each channel's field into sensor frame
+        sensor_fields = np.empty_like(lab_fields)
+        for ch in range(len(lab_fields)):
+            sensor_fields[ch] = R.apply(lab_fields[ch])
+        return (sensor_fields.ravel() - target) / scales
+
+    x0 = np.concatenate([initial_pos, initial_rotvec])
+
+    x_min, x_max, y_min, y_max, z_min, z_max = field_table.bounds
+    lb = [x_min, y_min, z_min, -np.pi, -np.pi, -np.pi]
+    ub = [x_max, y_max, z_max, np.pi, np.pi, np.pi]
+
+    result = least_squares(residual, x0, bounds=(lb, ub), method="trf")
+
+    pos = result.x[:3]
+    rot = Rotation.from_rotvec(result.x[3:6])
+    return pos, rot
+
+
+def invert_trace_6dof(field_table, t, signal, window_periods=1.0):
+    """Invert a rotated magnetometer time series to position + orientation.
+
+    Parameters
+    ----------
+    field_table : FieldTable
+    t : ndarray, shape (N,)
+    signal : ndarray, shape (N, 3)
+        Sensor-frame Bx, By, Bz (field rotated by sensor orientation).
+    window_periods : float
+
+    Returns
+    -------
+    t_positions : ndarray, shape (M,)
+    positions : ndarray, shape (M, 3)
+    rotations : list of Rotation, length M
+    """
+    freqs = field_table.frequencies
+    min_freq = freqs.min()
+    window_duration = window_periods / min_freq
+    dt = t[1] - t[0] if len(t) > 1 else 1.0
+    window_samples = max(int(window_duration / dt), 2)
+
+    step = max(window_samples // 2, 1)
+    n_windows = max((len(t) - window_samples) // step + 1, 1)
+
+    t_positions = np.empty(n_windows)
+    positions = np.empty((n_windows, 3))
+    rotations = []
+
+    prev_pos = None
+    prev_rotvec = None
+
+    for i in range(n_windows):
+        start = i * step
+        end = start + window_samples
+        if end > len(t):
+            end = len(t)
+            start = max(end - window_samples, 0)
+
+        t_win = t[start:end]
+        sig_win = signal[start:end]
+
+        measurements = demodulate(t_win, sig_win, freqs)
+
+        # Coarse position search using rotation-invariant magnitudes
+        coarse = field_table.query_coarse_rotated(measurements)
+
+        if prev_pos is not None:
+            dist = np.linalg.norm(coarse - prev_pos)
+            grid_spacing = (
+                (field_table.bounds[1] - field_table.bounds[0])
+                / field_table.resolution
+            )
+            initial_pos = prev_pos if dist < grid_spacing * 3 else coarse
+        else:
+            initial_pos = coarse
+
+        # Estimate initial rotation from coarse position using SVD
+        # (Wahba's problem: find R that best maps lab fields to measurements)
+        if prev_rotvec is not None:
+            init_rotvec = prev_rotvec
+        else:
+            lab_fields = field_table.field_at(initial_pos)
+            init_rotvec = _estimate_rotation(lab_fields, measurements)
+
+        # 6-DOF refinement
+        pos, rot = _refine_6dof(
+            field_table, measurements, initial_pos,
+            initial_rotvec=init_rotvec,
+        )
+
+        t_positions[i] = (t_win[0] + t_win[-1]) / 2.0
+        positions[i] = pos
+        rotations.append(rot)
+        prev_pos = pos
+        prev_rotvec = rot.as_rotvec()
+
+    return t_positions, positions, rotations
