@@ -13,7 +13,12 @@ All results are noiseless unless otherwise noted.
 
 ---
 
-## Experiment 1: Initial 3-DOF inversion (small scale)
+## Experiments 1–5: No probe rotation (3-DOF position only)
+
+All experiments in this section assume the sensor is in a fixed orientation
+(no rotation). The only unknowns are x, y, z position.
+
+### Experiment 1: Initial 3-DOF inversion (small scale)
 
 **Scale:** 12cm tracking volume, coils at ±7.5cm
 **Grid resolution:** 25³
@@ -28,7 +33,7 @@ All results are noiseless unless otherwise noted.
 
 ---
 
-## Experiment 2: Frequency grouping fix
+### Experiment 2: Frequency grouping fix
 
 **Change:** Group sources by frequency in the field table. Two coils at 100 Hz → one combined channel. 6 sources → 3 frequency channels.
 
@@ -43,7 +48,7 @@ All results are noiseless unless otherwise noted.
 
 ---
 
-## Experiment 3: Window length sweep (stationary point)
+### Experiment 3: Window length sweep (stationary point)
 
 **Test:** Fixed sensor position, varying demodulation window length.
 
@@ -58,7 +63,7 @@ All results are noiseless unless otherwise noted.
 
 ---
 
-## Experiment 4: Moving trace with 3-period windows
+### Experiment 4: Moving trace with 3-period windows
 
 **Scale:** 12cm, resolution 30³, speed 5 cm/s
 
@@ -72,7 +77,7 @@ All results are noiseless unless otherwise noted.
 
 ---
 
-## Experiment 5: Current strength scaling (small scale)
+### Experiment 5: Current strength scaling (small scale)
 
 **Test:** Vary current magnitude from 1A to 10A.
 
@@ -84,9 +89,20 @@ All results are noiseless unless otherwise noted.
 
 **Finding:** Current strength has zero effect in the noiseless case. The field scales linearly and the inversion is scale-invariant. Current will matter only when sensor noise is introduced (SNR).
 
+Note: The 6-DOF column in this table was tested at cage scale (Experiment 8) with rotation, included here for the current-scaling comparison only.
+
 ---
 
-## Experiment 6: 6-DOF inversion (position + orientation)
+## Experiments 6–7: With probe rotation (6-DOF / 4-DOF)
+
+Starting from Experiment 6, synthetic **sensor rotation** is applied to the
+magnetometer signal. The sensor orientation varies smoothly along the path
+(base orientation along path tangent + random perturbations up to ±30°).
+This means the measured field is rotated into the sensor's local frame,
+and the inversion must recover both position (x, y, z) and orientation
+(roll, pitch, yaw).
+
+### Experiment 6: 6-DOF inversion (position + orientation)
 
 **First attempt:** Used same KD-tree coarse search as 3-DOF. Failed badly (98mm position, 145° orientation) because rotation changes the field direction, making the direction-aware KD-tree useless.
 
@@ -103,7 +119,7 @@ All results are noiseless unless otherwise noted.
 
 ---
 
-## Experiment 7: 4-DOF + IMU (position + yaw, tilt from accelerometer)
+### Experiment 7: 4-DOF + IMU (position + yaw, tilt from accelerometer)
 
 **Idea:** Use accelerometer to fix roll/pitch (tilt from gravity), only optimize position + yaw (4 unknowns).
 
@@ -120,7 +136,11 @@ All results are noiseless unless otherwise noted.
 
 ---
 
-## Experiment 8: Cage scale (0.5m cube)
+---
+
+## Experiments 8–10: Cage scale (0.5m cube)
+
+### Experiment 8: Cage scale baseline
 
 **Setup:** Coils at ±30cm, diameter 70cm, tracking volume ±20cm.
 
@@ -133,7 +153,7 @@ All results are noiseless unless otherwise noted.
 
 ---
 
-## Experiment 9: Coil geometry sweep (cage scale)
+### Experiment 9: Coil geometry sweep (cage scale)
 
 **Test:** Different asymmetric configurations, same coil frequencies.
 
@@ -152,7 +172,7 @@ All results are noiseless unless otherwise noted.
 
 ---
 
-## Experiment 10: Multipass inversion
+### Experiment 10: Multipass inversion
 
 **Idea (from user):** Use first-pass trajectory to get velocity hints, improve second pass.
 
