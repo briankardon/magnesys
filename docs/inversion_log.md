@@ -268,25 +268,66 @@ frequencies get more cycles and thus cleaner demodulation.
 
 ---
 
-## Summary of best results (noiseless)
+### Experiment 14: Noise injection (1 kHz, cage scale)
+
+**Sensor model:** MLX90393 (Melexis) 3-axis Hall-effect magnetometer.
+- Package: 3×3×0.9 mm QFN
+- Resolution: 0.161 µT, RMS noise ~0.5 µT typical
+- Sample rate: up to 1 kHz, current ~100 µA
+- Cost: ~$2–3
+- Noise modeled as additive white Gaussian, σ = 0.5 µT per axis per sample
+
+**Setup:** 1 kHz excitation, 30ms window (30 periods), 50 kHz sample rate,
+cage scale (0.5m), 30° rotation, 1500 samples averaged per window.
+
+**Noise level sweep (1A drive):**
+
+| σ (µT) | SNR | 3-DOF pos. error (median) | 3-DOF max | 6-DOF pos. error (median) | 6-DOF max |
+|--------|-----|--------------------------|-----------|--------------------------|-----------|
+| 0 | ∞ | 1.9 mm | 4.0 mm | 3.9 mm | 11.8 mm |
+| 0.1 | 11 | 2.2 mm | 4.8 mm | 4.1 mm | 12.4 mm |
+| 0.5 | 2 | 4.0 mm | 9.4 mm | 6.3 mm | 26.0 mm |
+| 2.0 | 1 | 14.0 mm | 29.2 mm | 21.1 mm | 94.8 mm |
+| 5.0 | 0 | 35.4 mm | 73.4 mm | 54.8 mm | 301.0 mm |
+
+**Current scaling sweep (σ=0.5 µT, MLX90393 typical):**
+
+| Current | Field (mean) | SNR | 3-DOF pos. error (median) | 3-DOF max | 6-DOF pos. error (median) | 6-DOF max |
+|---------|-------------|-----|--------------------------|-----------|--------------------------|-----------|
+| 1 A | 1.1 µT | 2 | 4.0 mm | 9.4 mm | 6.3 mm | 26.0 mm |
+| 5 A | 5.5 µT | 11 | 2.2 mm | 4.8 mm | 4.1 mm | 12.4 mm |
+| 10 A | 11.0 µT | 22 | 2.0 mm | 4.2 mm | 3.8 mm | 12.1 mm |
+| 20 A | 22.0 µT | 44 | 1.9 mm | 4.0 mm | 3.8 mm | 11.9 mm |
+
+**Findings:**
+1. **Even at SNR=2 (1A, σ=0.5 µT), the system achieves 4mm/6.3mm.** Lock-in averaging over 1500 samples per window (50 kHz × 30ms) provides ~39× noise reduction (√1500).
+2. **At 5A (SNR=11), accuracy is nearly at the noiseless floor** — 2.2mm vs 1.9mm. Diminishing returns beyond 10A.
+3. **5A is the practical sweet spot** — well under 1cm for both modes, easily achievable electronically.
+4. **The system is remarkably noise-tolerant** — the lock-in detection makes the dominant noise source (sensor white noise) much less impactful than expected.
+
+---
+
+## Summary of best results
 
 | Scenario | Position error (median) | Position error (max) | Orientation error (median) |
 |----------|------------------------|---------------------|---------------------------|
-| 3-DOF, 100 Hz, small scale | **3.3 mm** | 7.6 mm | n/a |
-| 3-DOF, 100 Hz, cage scale | 13.1 mm | 24.1 mm | n/a |
-| 3-DOF, 1 kHz, cage scale | **1.9 mm** | **4.0 mm** | n/a |
-| 6-DOF, 100 Hz, cage scale | 26.2 mm | 57.9 mm | 29.0° |
-| 6-DOF, 1 kHz, cage scale | **3.9 mm** | — | **28.1°** |
+| 3-DOF, 1 kHz, noiseless | **1.9 mm** | 4.0 mm | n/a |
+| 3-DOF, 1 kHz, 0.5 µT noise, 1A | 4.0 mm | 9.4 mm | n/a |
+| 3-DOF, 1 kHz, 0.5 µT noise, 5A | **2.2 mm** | 4.8 mm | n/a |
+| 6-DOF, 1 kHz, noiseless | **3.9 mm** | 11.8 mm | 28.1° |
+| 6-DOF, 1 kHz, 0.5 µT noise, 1A | 6.3 mm | 26.0 mm | 29.3° |
+| 6-DOF, 1 kHz, 0.5 µT noise, 5A | **4.1 mm** | 12.4 mm | 28.4° |
 
 ## Key findings
 
 1. **Demodulation cross-talk is the main position accuracy bottleneck.** More lock-in periods per window dramatically improves accuracy. Higher excitation frequencies achieve this without increasing the window duration.
 2. **Orientation-first initialization is critical** for robust 6-DOF convergence across frequencies.
-3. **Orientation accuracy (~28°) is limited by field geometry**, not demodulation — more coil pairs or IMU assistance would be needed to improve it.
-4. **Max errors are at cage edges** where field patterns are most nonlinear. A confidence metric based on optimizer residual could flag these.
+3. **Orientation accuracy (~28°) is limited by field geometry**, not demodulation or noise — more coil pairs or IMU assistance would be needed to improve it.
+4. **Sensor noise is well-handled by lock-in averaging.** Even at SNR=2, sub-centimeter position accuracy is achieved. 5A drive current provides near-noiseless performance.
+5. **Max errors are at cage edges** where field patterns are most nonlinear. A confidence metric based on optimizer residual could flag these.
 
 ## Next steps
 
-1. **Noise injection** — sensor noise may dominate over the demodulation floor at 1 kHz
-2. **Confidence metric** — output per-estimate quality based on optimizer residual
-3. **More coil pairs** — 4th pair for better orientation conditioning
+1. **Confidence metric** — output per-estimate quality based on optimizer residual
+2. **More coil pairs** — 4th pair for better orientation conditioning
+3. **Real-world validation** — prototype with actual MLX90393 sensor and coils

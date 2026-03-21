@@ -585,6 +585,38 @@ def apply_rotation_to_field(Bx, By, Bz, rotations):
 
 
 # ------------------------------------------------------------------
+# Noise injection
+# ------------------------------------------------------------------
+
+def add_magnetometer_noise(Bx, By, Bz, sigma_uT=0.5, seed=None):
+    """Add white Gaussian noise to magnetometer readings.
+
+    Parameters
+    ----------
+    Bx, By, Bz : ndarray, shape (N,)
+        Field components in Tesla.
+    sigma_uT : float
+        RMS noise per axis per sample in microtesla (default 0.5 µT,
+        typical for MLX90393 Hall-effect magnetometer).
+    seed : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    Bx_noisy, By_noisy, Bz_noisy : ndarray, shape (N,)
+        Noisy field components in Tesla.
+    """
+    rng = np.random.default_rng(seed)
+    sigma_T = sigma_uT * 1e-6  # convert µT to T
+    n = len(Bx)
+    return (
+        Bx + rng.normal(0, sigma_T, n),
+        By + rng.normal(0, sigma_T, n),
+        Bz + rng.normal(0, sigma_T, n),
+    )
+
+
+# ------------------------------------------------------------------
 # IMU simulation
 # ------------------------------------------------------------------
 
