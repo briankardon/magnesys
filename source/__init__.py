@@ -7,6 +7,7 @@ from .path import SamplePath, LineSegmentPath
 from .simulation import Simulation
 from .visualization import Visualizer
 from . import project
+from . import inversion
 
 __all__ = [
     "CurrentLoop",
