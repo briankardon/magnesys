@@ -1,0 +1,149 @@
+{
+  "magnesys_version": 3,
+  "simulation": {
+    "loops": [
+      {
+        "loop_type": "circular",
+        "diameter": 0.7,
+        "center": [
+          -0.3,
+          0.0,
+          0.0
+        ],
+        "normal": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "current": 5.0,
+        "frequency": 1000.0,
+        "phase": 0.0
+      },
+      {
+        "loop_type": "circular",
+        "diameter": 0.7,
+        "center": [
+          0.3,
+          0.0,
+          0.0
+        ],
+        "normal": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "current": -3.5,
+        "frequency": 1000.0,
+        "phase": 0.0
+      },
+      {
+        "loop_type": "circular",
+        "diameter": 0.7,
+        "center": [
+          0.0,
+          -0.3,
+          0.0
+        ],
+        "normal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "current": 5.0,
+        "frequency": 1373.0,
+        "phase": 0.0
+      },
+      {
+        "loop_type": "circular",
+        "diameter": 0.7,
+        "center": [
+          0.0,
+          0.3,
+          0.0
+        ],
+        "normal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "current": -3.5,
+        "frequency": 1373.0,
+        "phase": 0.0
+      },
+      {
+        "loop_type": "circular",
+        "diameter": 0.7,
+        "center": [
+          0.0,
+          0.0,
+          -0.3
+        ],
+        "normal": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "current": 5.0,
+        "frequency": 1747.0,
+        "phase": 0.0
+      },
+      {
+        "loop_type": "circular",
+        "diameter": 0.7,
+        "center": [
+          0.0,
+          0.0,
+          0.3
+        ],
+        "normal": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "current": -3.5,
+        "frequency": 1747.0,
+        "phase": 0.0
+      }
+    ]
+  },
+  "visualization": {
+    "grid_resolution": 8,
+    "arrow_size_mode": "log",
+    "auto_update": true,
+    "sample_paths_visible": true,
+    "selected_path_index": 0,
+    "time": 0.0
+  },
+  "sample_paths": [
+    {
+      "path_type": "spline",
+      "points": [
+        [
+          -0.15,
+          -0.12,
+          -0.1
+        ],
+        [
+          0.05,
+          0.15,
+          -0.08
+        ],
+        [
+          0.18,
+          -0.1,
+          0.12
+        ],
+        [
+          -0.08,
+          0.08,
+          0.18
+        ],
+        [
+          0.12,
+          0.05,
+          -0.15
+        ]
+      ]
+    }
+  ]
+}

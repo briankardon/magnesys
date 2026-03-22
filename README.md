@@ -136,6 +136,7 @@ The `demos/` directory contains example scripts and `.mag` project files:
 | `field_along_line` | Sample line with 2D field plot |
 | `showcase` | Multiple geometries, path types, and features |
 | `ac_gradient_coils` | 3-axis anti-Helmholtz gradient coils at 100/137/173 Hz |
+| `inversion_test_1kHz_5A` | 3-axis setup optimized for position inversion (1 kHz, 5A) |
 
 Run any demo as a script or open the `.mag` file:
 
@@ -143,6 +144,59 @@ Run any demo as a script or open the `.mag` file:
 python demos/helmholtz_coil.py
 python magnesys.py demos/helmholtz_coil.mag
 ```
+
+## Position Inversion
+
+Magnesys includes a magnetic-field-to-position inversion pipeline for
+reconstructing a sensor's trajectory from its magnetometer readings.
+This is designed for multi-frequency AC excitation setups (e.g. 3-axis
+anti-Helmholtz gradient coils at coprime frequencies), where lock-in
+demodulation separates each coil pair's contribution.
+
+### How it works
+
+1. **Lock-in demodulation** extracts each frequency's 3-axis field vector from the time-domain signal
+2. **Coarse search** finds the nearest match in a precomputed field table (KD-tree)
+3. **Nonlinear refinement** via `scipy.optimize.least_squares` from the coarse estimate
+4. **6-DOF mode** jointly solves for position + orientation when the sensor rotates
+
+### Workflow: magnesys → invert.py → magnesys
+
+**1. Open a coil setup** with AC sources:
+```bash
+python magnesys.py demos/inversion_test_1kHz_5A.mag
+```
+
+**2. Create or edit a sample path** — this is the probe trajectory the synthetic sensor will follow.
+
+**3. Export the synthetic signal** via Export → Export field vs. time:
+- Select the path, set probe speed, duration, and sampling rate (≥10× highest frequency)
+- Optionally check "Apply random sensor rotation" for 6-DOF testing
+- Save as CSV (e.g. `my_signal.csv`)
+
+**4. Run the inversion:**
+```bash
+python invert.py demos/inversion_test_1kHz_5A.mag my_signal.csv --window-periods 30
+```
+This prints position/orientation error statistics and writes `my_signal_inverted.csv`.
+
+Options:
+- `--resolution 35` — finer field table grid (slower, more accurate)
+- `--window-periods 30` — demodulation window in periods of the lowest frequency
+
+**5. Import the reconstructed trajectory** back into magnesys:
+Edit → Import trajectory CSV → select `my_signal_inverted.csv`
+
+**6. Compare** — the reconstructed trajectory appears alongside the original path in the 3D view.
+
+### Tested accuracy (0.5m cage, MLX90393 sensor noise)
+
+| Mode | Drive current | Position error (median) |
+|------|--------------|------------------------|
+| 3-DOF (no rotation) | 5 A | 2.2 mm |
+| 6-DOF (30° rotation) | 5 A | 4.1 mm |
+
+See `docs/inversion_log.md` for the full experiment history.
 
 ## Adding New Geometries
 
@@ -166,7 +220,8 @@ For arbitrary wire shapes, subclass `PathBasedLoop` instead — just implement `
 ## Architecture
 
 ```
-magnesys.py                      # CLI launcher
+magnesys.py                      # GUI launcher
+invert.py                        # CLI for magnetic → position inversion
 source/
     current_loop.py              # Abstract base class + registry
     circular_current_loop.py     # Exact field via elliptic integrals
@@ -174,12 +229,16 @@ source/
     path_based_loop.py           # Biot-Savart base for arbitrary paths
     round_rect_current_loop.py
     path.py                      # SamplePath / LineSegmentPath / PolylinePath / SplinePath
+    trajectory.py                # Static 3D trajectory for visualization
     simulation.py                # Loop collection + field computation
+    inversion.py                 # Field table, demodulation, position inversion
     visualization.py             # Qt GUI + PyVista 3D + pyqtgraph 2D
     project.py                   # .mag file I/O
 demos/
     *.py                         # Example scripts
     *.mag                        # Loadable project files
+docs/
+    inversion_log.md             # Experiment history and results
 ```
 
 ## Credits
