@@ -45,6 +45,8 @@ def main():
     parser.add_argument("--bounds", type=float, nargs=6, default=None,
                         metavar=("XMIN", "XMAX", "YMIN", "YMAX", "ZMIN", "ZMAX"),
                         help="Search volume bounds in meters (default: auto from coils)")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Suppress progress updates during inversion")
     args = parser.parse_args()
 
     # Load simulation
@@ -108,6 +110,19 @@ def main():
     print(f"  Done in {time.time() - t0:.1f} s")
     print(f"  {len(table.frequencies)} frequency channels: {table.frequencies}")
 
+    # Progress reporter
+    last_pct = [-1]  # mutable for closure
+
+    def progress(i, n):
+        pct = int(100 * i / n)
+        if pct >= last_pct[0] + 10 or i == n:
+            elapsed = time.time() - t0
+            eta = elapsed / i * (n - i) if i > 0 else 0
+            print(f"\r  {i}/{n} windows ({pct}%) - {elapsed:.1f}s elapsed, ~{eta:.1f}s remaining", end="", flush=True)
+            last_pct[0] = pct
+
+    pfn = None if args.quiet else progress
+
     # Invert
     est_rotations = None
     if has_imu:
@@ -116,22 +131,25 @@ def main():
         t0 = time.time()
         t_pos, positions, est_rotations = invert_trace_imu(
             table, t, signal, accel, window_periods=args.window_periods,
+            progress_fn=pfn,
         )
-        print(f"  Done in {time.time() - t0:.1f} s")
+        print(f"\n  Done in {time.time() - t0:.1f} s")
     elif has_rotation:
         print(f"Inverting 6-DOF (window={args.window_periods} periods)...")
         t0 = time.time()
         t_pos, positions, est_rotations = invert_trace_6dof(
             table, t, signal, window_periods=args.window_periods,
+            progress_fn=pfn,
         )
-        print(f"  Done in {time.time() - t0:.1f} s")
+        print(f"\n  Done in {time.time() - t0:.1f} s")
     else:
         print(f"Inverting 3-DOF (window={args.window_periods} periods)...")
         t0 = time.time()
         t_pos, positions = invert_trace(
             table, t, signal, window_periods=args.window_periods,
+            progress_fn=pfn,
         )
-        print(f"  Done in {time.time() - t0:.1f} s")
+        print(f"\n  Done in {time.time() - t0:.1f} s")
 
     print(f"  {len(t_pos)} position estimates")
 

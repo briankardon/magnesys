@@ -239,7 +239,7 @@ def demodulate(t, signal, frequencies):
     return amplitudes
 
 
-def invert_trace(field_table, t, signal, window_periods=1.0):
+def invert_trace(field_table, t, signal, window_periods=1.0, progress_fn=None):
     """Invert a magnetometer time series to a position trace.
 
     Parameters
@@ -254,6 +254,8 @@ def invert_trace(field_table, t, signal, window_periods=1.0):
         Demodulation window length in periods of the lowest frequency.
         Longer windows give better frequency separation but coarser
         time resolution.
+    progress_fn : callable, optional
+        Called as progress_fn(i, n_windows) periodically during inversion.
 
     Returns
     -------
@@ -313,6 +315,9 @@ def invert_trace(field_table, t, signal, window_periods=1.0):
         t_positions[i] = (t_win[0] + t_win[-1]) / 2.0
         positions[i] = refined
         prev_pos = refined
+
+        if progress_fn is not None:
+            progress_fn(i + 1, n_windows)
 
     return t_positions, positions
 
@@ -750,7 +755,8 @@ def _refine_4dof(field_table, measurements, initial_pos, tilt,
     return pos, rot
 
 
-def invert_trace_imu(field_table, t, signal, accel, window_periods=1.0):
+def invert_trace_imu(field_table, t, signal, accel, window_periods=1.0,
+                     progress_fn=None):
     """Invert a rotated magnetometer trace using IMU-assisted 4-DOF.
 
     Roll and pitch are extracted from the accelerometer; only position
@@ -838,6 +844,9 @@ def invert_trace_imu(field_table, t, signal, accel, window_periods=1.0):
         prev_pos = pos
         # Extract yaw from the solved rotation for next window's initial guess
         prev_yaw = rot.as_euler("xyz")[2]
+
+        if progress_fn is not None:
+            progress_fn(i + 1, n_windows)
 
     return t_positions, positions, rotations
 
@@ -955,7 +964,8 @@ def _estimate_rotation_from_directions(measurements):
                               sensor_dirs[:min(n_ch, 3)])
 
 
-def invert_trace_6dof(field_table, t, signal, window_periods=1.0):
+def invert_trace_6dof(field_table, t, signal, window_periods=1.0,
+                      progress_fn=None):
     """Invert a rotated magnetometer time series to position + orientation.
 
     Strategy: orientation-first approach.
@@ -1045,5 +1055,8 @@ def invert_trace_6dof(field_table, t, signal, window_periods=1.0):
         rotations.append(rot)
         prev_pos = pos
         prev_rotvec = rot.as_rotvec()
+
+        if progress_fn is not None:
+            progress_fn(i + 1, n_windows)
 
     return t_positions, positions, rotations

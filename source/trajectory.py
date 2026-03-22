@@ -32,7 +32,8 @@ class Trajectory:
         """Total arc length of the trajectory."""
         if len(self.points) < 2:
             return 0.0
-        return float(np.sum(np.linalg.norm(np.diff(self.points, axis=0), axis=1)))
+        seg_lens = np.linalg.norm(np.diff(self.points, axis=0), axis=1)
+        return float(np.nansum(seg_lens))
 
     def to_dict(self):
         return {

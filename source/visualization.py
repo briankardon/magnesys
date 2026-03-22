@@ -119,6 +119,7 @@ class ExportFieldVsTimeDialog(QDialog):
     def __init__(self, sample_paths, selected_index, max_freq, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Export field vs. time along path")
+        self.resize(500, self.sizeHint().height())
         self._sample_paths = sample_paths
 
         layout = QVBoxLayout(self)
@@ -142,12 +143,15 @@ class ExportFieldVsTimeDialog(QDialog):
         self._speed_spin.valueChanged.connect(self._update_readouts)
         form.addRow("Probe speed:", self._speed_spin)
 
-        # Duration
+        # Duration (default: one full traversal at default speed)
+        default_speed = self._speed_spin.value()
+        default_path_len = sample_paths[selected_index].length
+        default_duration = default_path_len / default_speed if default_speed > 0 else 1.0
         self._duration_spin = QDoubleSpinBox()
         self._duration_spin.setDecimals(4)
         self._duration_spin.setSuffix(" s")
         self._duration_spin.setRange(1e-6, 1e6)
-        self._duration_spin.setValue(1.0)
+        self._duration_spin.setValue(default_duration)
         self._duration_spin.setSingleStep(0.1)
         self._duration_spin.valueChanged.connect(self._update_readouts)
         form.addRow("Duration:", self._duration_spin)
@@ -183,6 +187,21 @@ class ExportFieldVsTimeDialog(QDialog):
         self._imu_cb = QCheckBox("Include 6-axis IMU data")
         self._imu_cb.setEnabled(False)  # enabled only when rotation is on
         layout.addWidget(self._imu_cb)
+
+        # Noise injection
+        noise_row = QHBoxLayout()
+        self._noise_cb = QCheckBox("Sensor noise:")
+        noise_row.addWidget(self._noise_cb)
+        self._noise_spin = QDoubleSpinBox()
+        self._noise_spin.setDecimals(2)
+        self._noise_spin.setSuffix(" \u00b5T")
+        self._noise_spin.setRange(0.0, 1000.0)
+        self._noise_spin.setValue(0.5)  # MLX90393 typical
+        self._noise_spin.setSingleStep(0.1)
+        self._noise_spin.setEnabled(False)
+        noise_row.addWidget(self._noise_spin)
+        layout.addLayout(noise_row)
+        self._noise_cb.toggled.connect(self._noise_spin.setEnabled)
 
         # Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
@@ -227,6 +246,12 @@ class ExportFieldVsTimeDialog(QDialog):
 
     def include_imu(self):
         return self._imu_cb.isChecked()
+
+    def noise_sigma_uT(self):
+        """Return noise sigma in µT, or 0 if disabled."""
+        if self._noise_cb.isChecked():
+            return self._noise_spin.value()
+        return 0.0
 
     def sample_count(self):
         return max(int(self.duration() * self.sampling_rate()) + 1, 2)
@@ -1437,7 +1462,18 @@ class Visualizer:
             return
 
         try:
-            data = np.genfromtxt(csv_path, delimiter=",", comments="#")
+            # Skip comment lines and non-numeric header rows
+            with open(csv_path) as fh:
+                skip = 0
+                for line in fh:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        skip += 1
+                    elif not stripped[0].lstrip("-").replace(".", "").replace("e", "").replace("+", "").isdigit():
+                        skip += 1  # column header like "t,x,y,z"
+                    else:
+                        break
+            data = np.genfromtxt(csv_path, delimiter=",", skip_header=skip)
         except Exception as e:
             QMessageBox.warning(
                 self._window, "Import error", f"Could not read CSV:\n{e}",
@@ -1838,6 +1874,7 @@ class Visualizer:
         rate = dlg.sampling_rate()
         use_rotation = dlg.apply_rotation()
         use_imu = dlg.include_imu()
+        noise_sigma = dlg.noise_sigma_uT()
         path_length = sp.length
 
         # Ask for output file
@@ -1913,6 +1950,13 @@ class Visualizer:
                 dt = duration / max(n_samples - 1, 1)
                 accel_data, gyro_data = generate_imu_data(rotations, dt)
 
+        # Optionally inject sensor noise
+        if noise_sigma > 0:
+            from .inversion import add_magnetometer_noise
+            Bx_total, By_total, Bz_total = add_magnetometer_noise(
+                Bx_total, By_total, Bz_total, sigma_uT=noise_sigma,
+            )
+
         Bmag = np.sqrt(Bx_total**2 + By_total**2 + Bz_total**2)
 
         # Write CSV
@@ -1922,6 +1966,8 @@ class Visualizer:
                 notes.append("rotated=true")
             if use_imu:
                 notes.append("imu=true")
+            if noise_sigma > 0:
+                notes.append(f"noise={noise_sigma}uT")
             note_str = ", " + ", ".join(notes) if notes else ""
             f.write(
                 f"# Magnesys v{project.CURRENT_VERSION} — "
