@@ -125,6 +125,7 @@ def main():
 
     # Invert
     est_rotations = None
+    uncertainties = None
     if has_imu:
         accel = data[:, 12:15]  # ax, ay, az
         print(f"Inverting 4-DOF with IMU (window={args.window_periods} periods)...")
@@ -137,7 +138,7 @@ def main():
     elif has_rotation:
         print(f"Inverting 6-DOF (window={args.window_periods} periods)...")
         t0 = time.time()
-        t_pos, positions, est_rotations = invert_trace_6dof(
+        t_pos, positions, est_rotations, uncertainties = invert_trace_6dof(
             table, t, signal, window_periods=args.window_periods,
             progress_fn=pfn,
         )
@@ -145,7 +146,7 @@ def main():
     else:
         print(f"Inverting 3-DOF (window={args.window_periods} periods)...")
         t0 = time.time()
-        t_pos, positions = invert_trace(
+        t_pos, positions, uncertainties = invert_trace(
             table, t, signal, window_periods=args.window_periods,
             progress_fn=pfn,
         )
@@ -199,13 +200,29 @@ def main():
         stem = Path(args.signal_csv).stem
         args.output_csv = str(Path(args.signal_csv).parent / f"{stem}_inverted.csv")
 
+    # Print uncertainty stats if available
+    if uncertainties is not None:
+        combined = np.sqrt(np.sum(uncertainties**2, axis=1))
+        print(f"  Estimated 1\u03c3 uncertainty:")
+        print(f"    Median: {np.median(combined)*1000:.2f} mm")
+        print(f"    Max:    {combined.max()*1000:.2f} mm")
+
     print(f"Writing {args.output_csv}...")
     with open(args.output_csv, "w") as f:
         f.write("# Magnesys inversion result\n")
-        f.write("t,x,y,z\n")
+        f.write("# Uncertainty columns are Jacobian-based 1-sigma estimates\n")
+        f.write("t,x,y,z,sigma_x,sigma_y,sigma_z,pos_uncertainty_m\n")
         for i in range(len(t_pos)):
-            f.write(f"{t_pos[i]:.8e},{positions[i, 0]:.8e},"
-                    f"{positions[i, 1]:.8e},{positions[i, 2]:.8e}\n")
+            if uncertainties is not None:
+                sx, sy, sz = uncertainties[i]
+            else:
+                sx = sy = sz = 0.0
+            pu = np.sqrt(sx**2 + sy**2 + sz**2)
+            f.write(
+                f"{t_pos[i]:.8e},{positions[i, 0]:.8e},"
+                f"{positions[i, 1]:.8e},{positions[i, 2]:.8e},"
+                f"{sx:.8e},{sy:.8e},{sz:.8e},{pu:.8e}\n"
+            )
 
     print("Done! Import the trajectory into magnesys via:")
     print(f"  Edit -> Import trajectory CSV -> {args.output_csv}")

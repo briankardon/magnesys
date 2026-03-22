@@ -5,7 +5,7 @@ import sys
 import numpy as np
 import pyqtgraph as pg
 import pyvista as pv
-from PyQt6.QtCore import QEvent, QObject, Qt
+from PyQt6.QtCore import QEvent, QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QKeySequence, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QApplication,
@@ -22,10 +22,13 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QSlider,
+    QSpinBox,
     QSplitter,
+    QTextEdit,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -180,9 +183,19 @@ class ExportFieldVsTimeDialog(QDialog):
         layout.addLayout(form)
 
         # Random rotation option
-        self._rotation_cb = QCheckBox("Apply random sensor rotation")
+        rot_row = QHBoxLayout()
+        self._rotation_cb = QCheckBox("Random rotation:")
         self._rotation_cb.toggled.connect(self._on_rotation_toggled)
-        layout.addWidget(self._rotation_cb)
+        rot_row.addWidget(self._rotation_cb)
+        self._rotation_spin = QDoubleSpinBox()
+        self._rotation_spin.setDecimals(0)
+        self._rotation_spin.setSuffix("\u00b0 max")
+        self._rotation_spin.setRange(1, 180)
+        self._rotation_spin.setValue(30)
+        self._rotation_spin.setSingleStep(5)
+        self._rotation_spin.setEnabled(False)
+        rot_row.addWidget(self._rotation_spin)
+        layout.addLayout(rot_row)
 
         self._imu_cb = QCheckBox("Include 6-axis IMU data")
         self._imu_cb.setEnabled(False)  # enabled only when rotation is on
@@ -216,6 +229,7 @@ class ExportFieldVsTimeDialog(QDialog):
         self._update_readouts()
 
     def _on_rotation_toggled(self, checked):
+        self._rotation_spin.setEnabled(checked)
         self._imu_cb.setEnabled(checked)
         if not checked:
             self._imu_cb.setChecked(False)
@@ -244,6 +258,9 @@ class ExportFieldVsTimeDialog(QDialog):
     def apply_rotation(self):
         return self._rotation_cb.isChecked()
 
+    def rotation_max_deg(self):
+        return self._rotation_spin.value()
+
     def include_imu(self):
         return self._imu_cb.isChecked()
 
@@ -255,6 +272,298 @@ class ExportFieldVsTimeDialog(QDialog):
 
     def sample_count(self):
         return max(int(self.duration() * self.sampling_rate()) + 1, 2)
+
+
+class _InversionWorker(QThread):
+    """Background thread for running the inversion pipeline."""
+
+    progress = pyqtSignal(str)       # text message
+    bar_progress = pyqtSignal(int, int)  # (current, total) for progress bar
+    finished = pyqtSignal(object)    # output_csv path or error string
+
+    def __init__(self, simulation, csv_path, output_csv, resolution,
+                 window_periods, parent=None):
+        super().__init__(parent)
+        self.simulation = simulation
+        self.csv_path = csv_path
+        self.output_csv = output_csv
+        self.resolution = resolution
+        self.window_periods = window_periods
+
+    def run(self):
+        import time as tm
+        from .inversion import FieldTable, invert_trace, invert_trace_6dof
+
+        try:
+            # Load CSV
+            self.progress.emit("Loading signal CSV...")
+            with open(self.csv_path) as f:
+                skip = 0
+                for line in f:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        skip += 1
+                    elif not stripped[0].lstrip("-").replace(".", "").replace("e", "").replace("+", "").isdigit():
+                        skip += 1
+                    else:
+                        break
+            data = np.genfromtxt(self.csv_path, delimiter=",", skip_header=skip)
+            if data.shape[1] < 7:
+                self.finished.emit("Error: CSV must have at least 7 columns")
+                return
+
+            t = data[:, 0]
+            signal = data[:, 4:7]
+            has_rotation = data.shape[1] >= 12
+            self.progress.emit(
+                f"  {len(t)} samples, {t[-1] - t[0]:.4f} s duration"
+                f"{' (with rotation)' if has_rotation else ''}"
+            )
+
+            # Auto bounds
+            centers = np.array([loop.center for loop in self.simulation.loops])
+            margin = 0.08
+            mins = centers.min(axis=0) - margin
+            maxs = centers.max(axis=0) + margin
+            bounds = (mins[0], maxs[0], mins[1], maxs[1], mins[2], maxs[2])
+
+            # Build field table
+            res = self.resolution
+            self.progress.emit(
+                f"Building field table ({res}^3 = {res**3} grid points)..."
+            )
+            t0 = tm.time()
+            table = FieldTable(self.simulation, bounds, resolution=res)
+            self.progress.emit(
+                f"  Done in {tm.time() - t0:.1f} s — "
+                f"{len(table.frequencies)} channels: {table.frequencies}"
+            )
+
+            # Progress callback
+            last_pct = [-1]
+            t_inv = [tm.time()]
+
+            def on_progress(i, n):
+                pct = int(100 * i / n)
+                if pct >= last_pct[0] + 5 or i == n:
+                    elapsed = tm.time() - t_inv[0]
+                    eta = elapsed / i * (n - i) if i > 0 else 0
+                    self.progress.emit(
+                        f"  {i}/{n} windows ({pct}%) — "
+                        f"{elapsed:.1f}s elapsed, ~{eta:.1f}s remaining"
+                    )
+                    last_pct[0] = pct
+                self.bar_progress.emit(i, n)
+
+            # Invert
+            if has_rotation:
+                self.progress.emit(
+                    f"Inverting 6-DOF (window={self.window_periods} periods)..."
+                )
+                t_inv[0] = tm.time()
+                t_pos, positions, _, uncertainties = invert_trace_6dof(
+                    table, t, signal,
+                    window_periods=self.window_periods,
+                    progress_fn=on_progress,
+                )
+            else:
+                self.progress.emit(
+                    f"Inverting 3-DOF (window={self.window_periods} periods)..."
+                )
+                t_inv[0] = tm.time()
+                t_pos, positions, uncertainties = invert_trace(
+                    table, t, signal,
+                    window_periods=self.window_periods,
+                    progress_fn=on_progress,
+                )
+
+            self.progress.emit(
+                f"  Done — {len(t_pos)} position estimates "
+                f"in {tm.time() - t_inv[0]:.1f} s"
+            )
+
+            # Error stats if ground truth available
+            true_positions = data[:, 1:4]
+            from scipy.interpolate import interp1d
+            interp_x = interp1d(t, true_positions[:, 0], fill_value="extrapolate")
+            interp_y = interp1d(t, true_positions[:, 1], fill_value="extrapolate")
+            interp_z = interp1d(t, true_positions[:, 2], fill_value="extrapolate")
+            true_at = np.column_stack([
+                interp_x(t_pos), interp_y(t_pos), interp_z(t_pos),
+            ])
+            errors = np.linalg.norm(positions - true_at, axis=1)
+            self.progress.emit(
+                f"Position error: median={errors.mean()*1000:.2f} mm, "
+                f"max={errors.max()*1000:.2f} mm"
+            )
+
+            # Write output
+            # Uncertainty stats
+            combined_unc = np.sqrt(np.sum(uncertainties**2, axis=1))
+            self.progress.emit(
+                f"Estimated 1\u03c3 uncertainty: "
+                f"median={np.median(combined_unc)*1000:.2f} mm, "
+                f"max={combined_unc.max()*1000:.2f} mm"
+            )
+
+            self.progress.emit(f"Writing {self.output_csv}...")
+            with open(self.output_csv, "w") as f:
+                f.write("# Magnesys inversion result\n")
+                f.write("# Uncertainty columns are Jacobian-based 1-sigma estimates\n")
+                f.write("t,x,y,z,sigma_x,sigma_y,sigma_z,pos_uncertainty_m\n")
+                for i in range(len(t_pos)):
+                    sx, sy, sz = uncertainties[i]
+                    pu = float(combined_unc[i])
+                    f.write(
+                        f"{t_pos[i]:.8e},{positions[i, 0]:.8e},"
+                        f"{positions[i, 1]:.8e},{positions[i, 2]:.8e},"
+                        f"{sx:.8e},{sy:.8e},{sz:.8e},{pu:.8e}\n"
+                    )
+
+            self.progress.emit("Done!")
+            self.finished.emit(self.output_csv)
+
+        except Exception as e:
+            self.finished.emit(f"Error: {e}")
+
+
+class InversionDialog(QDialog):
+    """Dialog for running the magnetic → position inversion."""
+
+    def __init__(self, simulation, default_csv="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Invert magnetometer trace")
+        self.resize(550, 450)
+        self._simulation = simulation
+        self._worker = None
+        self._output_csv = None
+
+        layout = QVBoxLayout(self)
+
+        # CSV file selector
+        csv_row = QHBoxLayout()
+        csv_row.addWidget(QLabel("Signal CSV:"))
+        self._csv_edit = QComboBox()
+        self._csv_edit.setEditable(True)
+        if default_csv:
+            self._csv_edit.addItem(default_csv)
+        csv_row.addWidget(self._csv_edit, stretch=1)
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self._browse_csv)
+        csv_row.addWidget(browse_btn)
+        layout.addLayout(csv_row)
+
+        # Parameters
+        form = QFormLayout()
+
+        self._res_spin = QSpinBox()
+        self._res_spin.setRange(10, 100)
+        self._res_spin.setValue(30)
+        form.addRow("Grid resolution:", self._res_spin)
+
+        self._window_spin = QDoubleSpinBox()
+        self._window_spin.setRange(1, 100)
+        self._window_spin.setValue(30.0)
+        self._window_spin.setDecimals(1)
+        form.addRow("Window periods:", self._window_spin)
+
+        layout.addLayout(form)
+
+        # Import checkbox
+        self._import_cb = QCheckBox("Import inverted trajectory when done")
+        self._import_cb.setChecked(True)
+        layout.addWidget(self._import_cb)
+
+        # Progress text
+        self._log_text = QTextEdit()
+        self._log_text.setReadOnly(True)
+        self._log_text.setStyleSheet("font-family: monospace; font-size: 11px;")
+        layout.addWidget(self._log_text)
+
+        # Progress bar
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 0)  # indeterminate
+        self._progress_bar.setVisible(False)
+        layout.addWidget(self._progress_bar)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        self._run_btn = QPushButton("Run inversion")
+        self._run_btn.clicked.connect(self._run)
+        btn_row.addWidget(self._run_btn)
+        self._close_btn = QPushButton("Close")
+        self._close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self._close_btn)
+        layout.addLayout(btn_row)
+
+    def _browse_csv(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select signal CSV", "",
+            "CSV files (*.csv);;All files (*)",
+        )
+        if path:
+            self._csv_edit.setEditText(path)
+
+    def _log(self, text):
+        self._log_text.append(text)
+        # Auto-scroll to bottom
+        sb = self._log_text.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _run(self):
+        csv_path = self._csv_edit.currentText().strip()
+        if not csv_path:
+            QMessageBox.warning(self, "No CSV", "Please select a signal CSV file.")
+            return
+
+        import os
+        if not os.path.isfile(csv_path):
+            QMessageBox.warning(self, "File not found", f"Cannot find: {csv_path}")
+            return
+
+        # Generate output path
+        from pathlib import Path
+        stem = Path(csv_path).stem
+        self._output_csv = str(Path(csv_path).parent / f"{stem}_inverted.csv")
+
+        self._run_btn.setEnabled(False)
+        self._progress_bar.setVisible(True)
+        self._log_text.clear()
+        self._log(f"Input: {csv_path}")
+        self._log(f"Output: {self._output_csv}")
+        self._log("")
+
+        self._worker = _InversionWorker(
+            self._simulation,
+            csv_path,
+            self._output_csv,
+            resolution=self._res_spin.value(),
+            window_periods=self._window_spin.value(),
+            parent=self,
+        )
+        self._worker.progress.connect(self._log)
+        self._worker.bar_progress.connect(self._on_bar_progress)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.start()
+
+    def _on_bar_progress(self, current, total):
+        if self._progress_bar.maximum() != total:
+            self._progress_bar.setRange(0, total)
+        self._progress_bar.setValue(current)
+
+    def _on_finished(self, result):
+        self._run_btn.setEnabled(True)
+        self._progress_bar.setVisible(False)
+        if isinstance(result, str) and result.startswith("Error"):
+            self._log(f"\n{result}")
+            self._output_csv = None
+        # else result is the output csv path — already logged "Done!"
+
+    def should_import(self):
+        return self._import_cb.isChecked() and self._output_csv is not None
+
+    def output_csv_path(self):
+        return self._output_csv
 
 
 class Visualizer:
@@ -311,6 +620,7 @@ class Visualizer:
         self._locked_log_min_mag = None  # log-mode reference floor when locked
 
         self._probe_actors = []  # 3D probe markers along paths
+        self._last_exported_csv = ""  # cache for inversion dialog
 
         # Trajectories (static 3D polylines, not editable)
         self._trajectories = []
@@ -1117,6 +1427,13 @@ class Visualizer:
         export_time_action.triggered.connect(self._on_export_field_vs_time)
         export_menu.addAction(export_time_action)
 
+        # ---- Tools menu ----
+        tools_menu = menu_bar.addMenu("&Tools")
+
+        invert_action = QAction("&Invert magnetometer trace...", window)
+        invert_action.triggered.connect(self._on_invert_trace)
+        tools_menu.addAction(invert_action)
+
         # ---- Edit menu ----
         edit_menu = menu_bar.addMenu("&Edit")
 
@@ -1888,6 +2205,7 @@ class Visualizer:
             return
         if not csv_path.lower().endswith(".csv"):
             csv_path += ".csv"
+        self._last_exported_csv = csv_path
 
         t_samples = np.linspace(0, duration, n_samples)
 
@@ -1942,7 +2260,10 @@ class Visualizer:
         accel_data = None
         gyro_data = None
         if use_rotation:
-            rotations = generate_rotations(points, n_samples)
+            rotations = generate_rotations(
+                points, n_samples,
+                max_perturbation_deg=dlg.rotation_max_deg(),
+            )
             Bx_total, By_total, Bz_total = apply_rotation_to_field(
                 Bx_total, By_total, Bz_total, rotations,
             )
@@ -2002,6 +2323,43 @@ class Visualizer:
                         f"{gyro_data[i, 2]:.8e}"
                     )
                 f.write(row + "\n")
+
+    # ------------------------------------------------------------------
+    def _on_invert_trace(self):
+        """Tools → Invert magnetometer trace callback."""
+        dlg = InversionDialog(
+            self.simulation,
+            default_csv=self._last_exported_csv,
+            parent=self._window,
+        )
+        dlg.exec()
+
+        if dlg.should_import():
+            csv_path = dlg.output_csv_path()
+            try:
+                with open(csv_path) as fh:
+                    skip = 0
+                    for line in fh:
+                        stripped = line.strip()
+                        if not stripped or stripped.startswith("#"):
+                            skip += 1
+                        elif not stripped[0].lstrip("-").replace(".", "").replace("e", "").replace("+", "").isdigit():
+                            skip += 1
+                        else:
+                            break
+                data = np.genfromtxt(csv_path, delimiter=",", skip_header=skip)
+                if data.ndim == 2 and data.shape[1] >= 4:
+                    points = data[:, 1:4]
+                elif data.ndim == 2 and data.shape[1] >= 3:
+                    points = data[:, 0:3]
+                else:
+                    return
+                from pathlib import Path
+                name = Path(csv_path).stem
+                traj = Trajectory(points, label=name, color="#00aa00")
+                self._add_trajectory(traj)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Spacing helpers

@@ -28,6 +28,40 @@ from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation, Slerp
 
 
+def _uncertainty_from_result(result):
+    """Compute per-axis 1σ position uncertainty from a least_squares result.
+
+    Uses the Jacobian to estimate the covariance matrix:
+        cov ≈ (J^T J)^{-1} * s²
+    where s² is the residual variance.
+
+    Parameters
+    ----------
+    result : scipy.optimize.OptimizeResult
+        Result from least_squares (must have .jac and .fun attributes).
+
+    Returns
+    -------
+    sigma_xyz : ndarray, shape (n_params,)
+        Per-parameter 1σ uncertainty.
+    """
+    J = result.jac
+    residuals = result.fun
+    n_obs = len(residuals)
+    n_params = J.shape[1]
+    dof = max(n_obs - n_params, 1)
+    residual_var = np.sum(residuals**2) / dof
+
+    try:
+        JtJ = J.T @ J
+        cov = np.linalg.inv(JtJ) * residual_var
+        sigma = np.sqrt(np.maximum(np.diag(cov), 0.0))
+    except np.linalg.LinAlgError:
+        sigma = np.full(n_params, np.inf)
+
+    return sigma
+
+
 class FieldTable:
     """Precomputed per-frequency combined field vectors on a 3D grid.
 
@@ -193,6 +227,8 @@ class FieldTable:
         -------
         position : ndarray, shape (3,)
             Refined position estimate.
+        sigma_xyz : ndarray, shape (3,)
+            Per-axis 1σ uncertainty in meters (from Jacobian covariance).
         """
         target = measurements.ravel()
         scales = self._feature_scales
@@ -208,7 +244,11 @@ class FieldTable:
             bounds=([x_min, y_min, z_min], [x_max, y_max, z_max]),
             method="trf",
         )
-        return result.x
+
+        # Jacobian-based 1σ uncertainty estimate
+        sigma_xyz = _uncertainty_from_result(result)
+
+        return result.x, sigma_xyz
 
 
 def demodulate(t, signal, frequencies):
@@ -263,6 +303,8 @@ def invert_trace(field_table, t, signal, window_periods=1.0, progress_fn=None):
         Time at the center of each demodulation window.
     positions : ndarray, shape (M, 3)
         Estimated positions.
+    uncertainties : ndarray, shape (M, 3)
+        Per-axis 1σ position uncertainty in meters.
     """
     freqs = field_table.frequencies
     min_freq = freqs.min()
@@ -276,6 +318,7 @@ def invert_trace(field_table, t, signal, window_periods=1.0, progress_fn=None):
 
     t_positions = np.empty(n_windows)
     positions = np.empty((n_windows, 3))
+    uncertainties = np.empty((n_windows, 3))
 
     prev_pos = None
 
@@ -310,16 +353,17 @@ def invert_trace(field_table, t, signal, window_periods=1.0, progress_fn=None):
             initial = coarse
 
         # Refine
-        refined = field_table.refine(measurements, initial)
+        refined, sigma = field_table.refine(measurements, initial)
 
         t_positions[i] = (t_win[0] + t_win[-1]) / 2.0
         positions[i] = refined
+        uncertainties[i] = sigma
         prev_pos = refined
 
         if progress_fn is not None:
             progress_fn(i + 1, n_windows)
 
-    return t_positions, positions
+    return t_positions, positions, uncertainties
 
 
 def invert_trace_multipass(field_table, t, signal, window_periods=3.0,
@@ -345,14 +389,15 @@ def invert_trace_multipass(field_table, t, signal, window_periods=3.0,
     -------
     t_positions : ndarray, shape (M,)
     positions : ndarray, shape (M, 3)
+    uncertainties : ndarray, shape (M, 3)
     """
     # --- Pass 1: coarse trajectory ---
-    t_coarse, pos_coarse = invert_trace(
+    t_coarse, pos_coarse, _ = invert_trace(
         field_table, t, signal, window_periods=window_periods,
     )
 
     if len(t_coarse) < 2:
-        return t_coarse, pos_coarse
+        return t_coarse, pos_coarse, np.zeros_like(pos_coarse)
 
     # --- Interpolate coarse trajectory ---
     pos_interp = interp1d(
@@ -372,6 +417,7 @@ def invert_trace_multipass(field_table, t, signal, window_periods=3.0,
 
     t_positions = np.empty(n_windows)
     positions = np.empty((n_windows, 3))
+    uncertainties = np.empty((n_windows, 3))
 
     for i in range(n_windows):
         start = i * step
@@ -386,12 +432,13 @@ def invert_trace_multipass(field_table, t, signal, window_periods=3.0,
 
         measurements = demodulate(t_win, sig_win, freqs)
         predicted = pos_interp(t_center)
-        refined = field_table.refine(measurements, predicted)
+        refined, sigma = field_table.refine(measurements, predicted)
 
         t_positions[i] = t_center
         positions[i] = refined
+        uncertainties[i] = sigma
 
-    return t_positions, positions
+    return t_positions, positions, uncertainties
 
 
 def invert_trace_6dof_multipass(field_table, t, signal, window_periods=3.0,
@@ -416,12 +463,12 @@ def invert_trace_6dof_multipass(field_table, t, signal, window_periods=3.0,
     rotations : list of Rotation, length M
     """
     # --- Pass 1 ---
-    t_coarse, pos_coarse, rot_coarse = invert_trace_6dof(
+    t_coarse, pos_coarse, rot_coarse, _ = invert_trace_6dof(
         field_table, t, signal, window_periods=window_periods,
     )
 
     if len(t_coarse) < 2:
-        return t_coarse, pos_coarse, rot_coarse
+        return t_coarse, pos_coarse, rot_coarse, np.zeros_like(pos_coarse)
 
     # --- Interpolate ---
     pos_interp = interp1d(
@@ -446,6 +493,7 @@ def invert_trace_6dof_multipass(field_table, t, signal, window_periods=3.0,
 
     t_positions = np.empty(n_windows)
     positions = np.empty((n_windows, 3))
+    uncertainties = np.empty((n_windows, 3))
     rotations = []
 
     for i in range(n_windows):
@@ -463,16 +511,17 @@ def invert_trace_6dof_multipass(field_table, t, signal, window_periods=3.0,
         predicted_pos = pos_interp(t_center)
         predicted_rv = rv_interp(t_center)
 
-        pos, rot = _refine_6dof(
+        pos, rot, sigma = _refine_6dof(
             field_table, measurements, predicted_pos,
             initial_rotvec=predicted_rv,
         )
 
         t_positions[i] = t_center
         positions[i] = pos
+        uncertainties[i] = sigma
         rotations.append(rot)
 
-    return t_positions, positions, rotations
+    return t_positions, positions, rotations, uncertainties
 
 
 # ------------------------------------------------------------------
@@ -898,6 +947,9 @@ def _refine_6dof(field_table, measurements, initial_pos, initial_rotvec=None):
     -------
     position : ndarray, shape (3,)
     rotation : Rotation
+    sigma_xyz : ndarray, shape (3,)
+        Per-axis 1σ position uncertainty in meters (from the position
+        components of the 6-DOF Jacobian covariance).
     """
     if initial_rotvec is None:
         initial_rotvec = np.zeros(3)
@@ -926,7 +978,10 @@ def _refine_6dof(field_table, measurements, initial_pos, initial_rotvec=None):
 
     pos = result.x[:3]
     rot = Rotation.from_rotvec(result.x[3:6])
-    return pos, rot
+    # Extract position uncertainty (first 3 components of the 6-DOF covariance)
+    sigma_all = _uncertainty_from_result(result)
+    sigma_xyz = sigma_all[:3]
+    return pos, rot, sigma_xyz
 
 
 def _estimate_rotation_from_directions(measurements):
@@ -999,6 +1054,7 @@ def invert_trace_6dof(field_table, t, signal, window_periods=1.0,
 
     t_positions = np.empty(n_windows)
     positions = np.empty((n_windows, 3))
+    uncertainties = np.empty((n_windows, 3))
     rotations = []
 
     prev_pos = None
@@ -1045,13 +1101,14 @@ def invert_trace_6dof(field_table, t, signal, window_periods=1.0,
         init_rotvec = _estimate_rotation(lab_fields, measurements)
 
         # Step 5: Joint 6-DOF refinement
-        pos, rot = _refine_6dof(
+        pos, rot, sigma = _refine_6dof(
             field_table, measurements, initial_pos,
             initial_rotvec=init_rotvec,
         )
 
         t_positions[i] = (t_win[0] + t_win[-1]) / 2.0
         positions[i] = pos
+        uncertainties[i] = sigma
         rotations.append(rot)
         prev_pos = pos
         prev_rotvec = rot.as_rotvec()
@@ -1059,4 +1116,4 @@ def invert_trace_6dof(field_table, t, signal, window_periods=1.0,
         if progress_fn is not None:
             progress_fn(i + 1, n_windows)
 
-    return t_positions, positions, rotations
+    return t_positions, positions, rotations, uncertainties
