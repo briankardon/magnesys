@@ -184,11 +184,6 @@ class ExportFieldVsTimeDialog(QDialog):
         self._imu_cb.setEnabled(False)  # enabled only when rotation is on
         layout.addWidget(self._imu_cb)
 
-    def _on_rotation_toggled(self, checked):
-        self._imu_cb.setEnabled(checked)
-        if not checked:
-            self._imu_cb.setChecked(False)
-
         # Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self._export_btn = buttons.addButton(
@@ -200,6 +195,11 @@ class ExportFieldVsTimeDialog(QDialog):
         layout.addWidget(buttons)
 
         self._update_readouts()
+
+    def _on_rotation_toggled(self, checked):
+        self._imu_cb.setEnabled(checked)
+        if not checked:
+            self._imu_cb.setChecked(False)
 
     def _update_readouts(self):
         sp = self._sample_paths[self._path_combo.currentIndex()]
@@ -2195,6 +2195,10 @@ class Visualizer:
         if plotter is None:
             return
         sp = self._sample_paths[path_idx]
+
+        # Ensure visuals list is in sync with paths list
+        while len(self._path_visuals) <= path_idx:
+            self._path_visuals.append(None)
 
         line_actor = self._make_path_line_actor(plotter, sp)
         sphere_widgets = self._make_path_handles(plotter, sp, path_idx)
