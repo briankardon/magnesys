@@ -2160,11 +2160,13 @@ class Visualizer:
                 factor=1.0,
                 color="orange",
                 implicit=True,
+                tubing=False,
                 normal_rotation=True,
                 origin_translation=True,
                 outline_translation=True,
                 interaction_event="end",
                 test_callback=False,
+                outline_opacity=False,
             )
 
             self._plane_widget.SetHandleSize(
