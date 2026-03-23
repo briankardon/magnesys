@@ -2818,6 +2818,7 @@ class Visualizer:
                 curve.setData([], [])
             if self._waypoint_markers is not None:
                 self._waypoint_markers.setData([], [])
+            self._update_probe_markers()
             return
 
         if self._plot_mode == "time":
