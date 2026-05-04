@@ -24,3 +24,8 @@ Thumbs.db
 
 # Magnesys simulation files
 *.json
+
+# Experiment artifacts: CSV exports of B-vs-time / B-vs-position and
+# their _inverted.csv counterparts. Already-tracked CSVs (e.g.
+# demos/test_signal.csv) are unaffected by this rule.
+demos/*.csv

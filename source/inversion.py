@@ -650,8 +650,7 @@ def add_magnetometer_noise(Bx, By, Bz, sigma_uT=0.5, seed=None):
     Bx, By, Bz : ndarray, shape (N,)
         Field components in Tesla.
     sigma_uT : float
-        RMS noise per axis per sample in microtesla (default 0.5 µT,
-        typical for MLX90393 Hall-effect magnetometer).
+        RMS noise per axis per sample in microtesla (default 0.5 µT).
     seed : int, optional
         Random seed for reproducibility.
 
@@ -659,6 +658,10 @@ def add_magnetometer_noise(Bx, By, Bz, sigma_uT=0.5, seed=None):
     -------
     Bx_noisy, By_noisy, Bz_noisy : ndarray, shape (N,)
         Noisy field components in Tesla.
+
+    See Also
+    --------
+    apply_sensor_profile_noise : pick σ from a SensorProfile + sample rate.
     """
     rng = np.random.default_rng(seed)
     sigma_T = sigma_uT * 1e-6  # convert µT to T
@@ -667,6 +670,43 @@ def add_magnetometer_noise(Bx, By, Bz, sigma_uT=0.5, seed=None):
         Bx + rng.normal(0, sigma_T, n),
         By + rng.normal(0, sigma_T, n),
         Bz + rng.normal(0, sigma_T, n),
+    )
+
+
+def apply_sensor_profile_noise(Bx, By, Bz, profile, sample_rate_hz, seed=None):
+    """Add white Gaussian noise scaled to a SensorProfile and sample rate.
+
+    Per-sample σ is computed from the profile's noise spectral density
+    (nT/√Hz) and the effective sample rate (clamped to the profile's
+    max ODR), so swapping profiles or sweeping sample rates gives
+    physically consistent noise levels.
+
+    Parameters
+    ----------
+    Bx, By, Bz : ndarray, shape (N,)
+        Field components in Tesla.
+    profile : SensorProfile
+    sample_rate_hz : float
+        Requested sample rate.  If above ``profile.max_odr_hz`` the
+        actual sensor would clamp; the noise scales accordingly.
+    seed : int, optional
+
+    Returns
+    -------
+    Bx_noisy, By_noisy, Bz_noisy : ndarray
+    sigma_T : float
+        The per-sample standard deviation actually applied (in Tesla).
+    """
+    sigma_T = profile.per_sample_sigma_T(sample_rate_hz)
+    if sigma_T <= 0.0:
+        return Bx, By, Bz, 0.0
+    rng = np.random.default_rng(seed)
+    n = len(Bx)
+    return (
+        Bx + rng.normal(0, sigma_T, n),
+        By + rng.normal(0, sigma_T, n),
+        Bz + rng.normal(0, sigma_T, n),
+        sigma_T,
     )
 
 

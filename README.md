@@ -198,6 +198,39 @@ Edit → Import trajectory CSV → select `my_signal_inverted.csv`
 
 See `docs/inversion_log.md` for the full experiment history.
 
+### Sensor profiles
+
+The export dialog and `invert.py` both understand named sensor profiles
+(`source/sensor_profile.py`).  A profile pairs a noise spectral density
+(nT/√Hz) with a max 3-axis ODR (Hz); per-sample σ is computed from
+`σ = N₀ · √(fs/2)` with `fs` clamped to the sensor's max ODR.  Picking
+a profile in the Export → Field vs. time dialog automatically clamps the
+sample-rate spinner and shows the resulting σ live.
+
+| Profile | Tech | Noise (nT/√Hz) | Max ODR (Hz) | Notes |
+|---------|------|---------------:|-------------:|-------|
+| `ideal` | — | 0 | ∞ | Noiseless reference |
+| `MLX90393` | Hall | 150 | 500 | Cannot support 1 kHz lock-in |
+| `MLX90394` | Hall | 70 | 1000 | Lower-noise successor |
+| `AK09940A` | TMR | 30 | 2500 | Best digital integrated option |
+| `MMC5983MA` | AMR | 100 | 1000 | Similar regime to MLX90393 |
+| `RM3100` | mag-induct. | 13 | 430 | Lowest noise, but heavy & slow |
+| `DRV425x3` | fluxgate | 1.5 | 47000 | Reference-grade; high power |
+
+List from the CLI:
+```bash
+python invert.py --list-sensors
+```
+
+Annotate an inversion run with the expected σ for a given profile:
+```bash
+python invert.py --sensor AK09940A project.mag signal.csv
+```
+
+Numbers are best-effort estimates from public datasheets — refine
+against the operating mode (OSR, drive current, cycle count) you
+actually plan to use.
+
 ## Adding New Geometries
 
 For geometries with closed-form field solutions, subclass `CurrentLoop` directly:
@@ -232,6 +265,7 @@ source/
     trajectory.py                # Static 3D trajectory for visualization
     simulation.py                # Loop collection + field computation
     inversion.py                 # Field table, demodulation, position inversion
+    sensor_profile.py            # Named sensor profiles (noise SD + max ODR)
     visualization.py             # Qt GUI + PyVista 3D + pyqtgraph 2D
     project.py                   # .mag file I/O
 demos/

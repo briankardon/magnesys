@@ -277,6 +277,14 @@ frequencies get more cycles and thus cleaner demodulation.
 - Cost: ~$2–3
 - Noise modeled as additive white Gaussian, σ = 0.5 µT per axis per sample
 
+> **Caveat (added later):** This σ was treated as fixed at all sample
+> rates, and the simulation assumed 50 kSPS — neither of which the real
+> MLX90393 can actually deliver in 3-axis burst mode (capped near
+> ~500 Hz at minimum OSR).  Sensor-realistic experiments should use the
+> `SensorProfile` abstraction (`source/sensor_profile.py`), which scales
+> per-sample σ from a noise spectral density (nT/√Hz) and clamps to the
+> sensor's max ODR.  See `--list-sensors` in `invert.py`.
+
 **Setup:** 1 kHz excitation, 30ms window (30 periods), 50 kHz sample rate,
 cage scale (0.5m), 30° rotation, 1500 samples averaged per window.
 

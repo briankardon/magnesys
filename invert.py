@@ -25,17 +25,30 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from source import project
+from source import project, sensor_profile
 from source.inversion import (FieldTable, invert_trace, invert_trace_6dof,
                                invert_trace_imu)
+
+
+def _print_sensor_table():
+    """Pretty-print the registered sensor profiles."""
+    print("Registered sensor profiles:")
+    print(f"  {'name':<14} {'tech':<18} {'noise (nT/sqrt(Hz))':>20} "
+          f"{'max ODR (Hz)':>14}  notes")
+    for prof in sensor_profile.all_profiles():
+        odr = (f"{prof.max_odr_hz:.0f}" if np.isfinite(prof.max_odr_hz)
+               else "inf")
+        print(f"  {prof.name:<14} {prof.technology:<18} "
+              f"{prof.noise_density_nT_sqrtHz:>20.2f} {odr:>14}  "
+              f"{prof.notes}")
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Invert a magnetometer trace to a position trajectory",
     )
-    parser.add_argument("mag_file", help="Path to the .mag project file")
-    parser.add_argument("signal_csv", help="Path to the B-vs-time CSV")
+    parser.add_argument("mag_file", nargs="?", help="Path to the .mag project file")
+    parser.add_argument("signal_csv", nargs="?", help="Path to the B-vs-time CSV")
     parser.add_argument("output_csv", nargs="?", default=None,
                         help="Output trajectory CSV (default: <signal>_inverted.csv)")
     parser.add_argument("--resolution", type=int, default=30,
@@ -47,7 +60,20 @@ def main():
                         help="Search volume bounds in meters (default: auto from coils)")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress progress updates during inversion")
+    parser.add_argument("--sensor", default=None,
+                        help="Sensor profile name; prints expected per-sample σ "
+                             "at the CSV's sample rate (informational; does not "
+                             "change the inversion).")
+    parser.add_argument("--list-sensors", action="store_true",
+                        help="List registered sensor profiles and exit.")
     args = parser.parse_args()
+
+    if args.list_sensors:
+        _print_sensor_table()
+        sys.exit(0)
+
+    if not args.mag_file or not args.signal_csv:
+        parser.error("mag_file and signal_csv are required")
 
     # Load simulation
     print(f"Loading {args.mag_file}...")
@@ -88,6 +114,32 @@ def main():
     elif has_rotation:
         mode_str = " (rotation, no IMU)"
     print(f"  {len(t)} samples, {t[-1] - t[0]:.4f} s duration{mode_str}")
+
+    # If a sensor profile was named, print the expected per-sample noise
+    # at the CSV's sample rate.  Purely informational — does not alter
+    # the signal or inversion.
+    if args.sensor:
+        try:
+            prof = sensor_profile.get(args.sensor)
+        except KeyError:
+            print(f"Unknown sensor '{args.sensor}'. Available: "
+                  f"{sensor_profile.names()}")
+            sys.exit(2)
+        dt = float(np.median(np.diff(t))) if len(t) > 1 else 1.0
+        fs = 1.0 / dt if dt > 0 else 0.0
+        sigma_uT = prof.per_sample_sigma_uT(fs)
+        odr_str = (f"{prof.max_odr_hz:.0f} Hz"
+                   if np.isfinite(prof.max_odr_hz) else "unconstrained")
+        clamp_note = ""
+        if np.isfinite(prof.max_odr_hz) and fs > prof.max_odr_hz:
+            clamp_note = (f"  WARNING: CSV rate {fs:.0f} Hz exceeds "
+                          f"sensor max ODR {prof.max_odr_hz:.0f} Hz - "
+                          f"sigma computed at clamped rate")
+        print(f"Sensor profile: {prof.name} ({prof.technology})")
+        print(f"  noise density: {prof.noise_density_nT_sqrtHz:.2f} nT/sqrt(Hz)")
+        print(f"  max ODR:       {odr_str}")
+        print(f"  CSV rate:      {fs:.0f} Hz")
+        print(f"  expected sigma: {sigma_uT:.4f} uT per sample{clamp_note}")
 
     # Determine bounds
     if args.bounds:

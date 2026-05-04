@@ -6,8 +6,10 @@ from .infinite_line_current import InfiniteLineCurrent
 from .path import SamplePath, LineSegmentPath
 from .simulation import Simulation
 from .visualization import Visualizer
+from .sensor_profile import SensorProfile
 from . import project
 from . import inversion
+from . import sensor_profile
 
 __all__ = [
     "CurrentLoop",
@@ -19,5 +21,7 @@ __all__ = [
     "LineSegmentPath",
     "Simulation",
     "Visualizer",
+    "SensorProfile",
     "project",
+    "sensor_profile",
 ]

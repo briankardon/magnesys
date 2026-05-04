@@ -36,7 +36,9 @@ from PyQt6.QtWidgets import (
 from pyvistaqt import QtInteractor
 
 from . import project
+from . import sensor_profile as sensor_profile_mod
 from .path import LineSegmentPath, PolylinePath, SplinePath
+from .sensor_profile import SensorProfile
 from .trajectory import Trajectory
 
 
@@ -201,20 +203,62 @@ class ExportFieldVsTimeDialog(QDialog):
         self._imu_cb.setEnabled(False)  # enabled only when rotation is on
         layout.addWidget(self._imu_cb)
 
-        # Noise injection
-        noise_row = QHBoxLayout()
-        self._noise_cb = QCheckBox("Sensor noise:")
-        noise_row.addWidget(self._noise_cb)
-        self._noise_spin = QDoubleSpinBox()
-        self._noise_spin.setDecimals(2)
-        self._noise_spin.setSuffix(" \u00b5T")
-        self._noise_spin.setRange(0.0, 1000.0)
-        self._noise_spin.setValue(0.5)  # MLX90393 typical
-        self._noise_spin.setSingleStep(0.1)
-        self._noise_spin.setEnabled(False)
-        noise_row.addWidget(self._noise_spin)
-        layout.addLayout(noise_row)
-        self._noise_cb.toggled.connect(self._noise_spin.setEnabled)
+        # Sensor profile picker (drives noise + max sample rate)
+        sensor_box = QGroupBox("Sensor profile")
+        sensor_form = QFormLayout(sensor_box)
+
+        self._sensor_combo = QComboBox()
+        for prof in sensor_profile_mod.all_profiles():
+            self._sensor_combo.addItem(prof.name)
+        self._sensor_combo.addItem("Custom...")
+        default_idx = self._sensor_combo.findText(sensor_profile_mod.DEFAULT_NAME)
+        if default_idx >= 0:
+            self._sensor_combo.setCurrentIndex(default_idx)
+        sensor_form.addRow("Sensor:", self._sensor_combo)
+
+        # Custom-mode spinners (hidden unless "Custom..." is picked)
+        self._custom_density_spin = QDoubleSpinBox()
+        self._custom_density_spin.setDecimals(2)
+        self._custom_density_spin.setSuffix(" nT/\u221aHz")
+        self._custom_density_spin.setRange(0.0, 1e6)
+        self._custom_density_spin.setValue(150.0)
+        self._custom_density_spin.setSingleStep(10.0)
+        self._custom_density_label = QLabel("Noise density:")
+        sensor_form.addRow(self._custom_density_label, self._custom_density_spin)
+
+        self._custom_odr_spin = QDoubleSpinBox()
+        self._custom_odr_spin.setDecimals(0)
+        self._custom_odr_spin.setSuffix(" Hz")
+        self._custom_odr_spin.setRange(1.0, 1e9)
+        self._custom_odr_spin.setValue(1000.0)
+        self._custom_odr_label = QLabel("Max ODR:")
+        sensor_form.addRow(self._custom_odr_label, self._custom_odr_spin)
+
+        # Read-only readouts driven by the selected profile
+        self._sensor_density_label = QLabel()
+        sensor_form.addRow("Noise density:", self._sensor_density_label)
+        self._sensor_odr_label = QLabel()
+        sensor_form.addRow("Max ODR:", self._sensor_odr_label)
+        self._sensor_sigma_label = QLabel()
+        sensor_form.addRow("Per-sample \u03c3:", self._sensor_sigma_label)
+        self._sensor_notes_label = QLabel()
+        self._sensor_notes_label.setWordWrap(True)
+        self._sensor_notes_label.setStyleSheet("QLabel { color: gray; }")
+        sensor_form.addRow("", self._sensor_notes_label)
+
+        # Inject-noise checkbox
+        self._noise_cb = QCheckBox("Inject sensor noise into exported signal")
+        self._noise_cb.setChecked(False)
+        sensor_form.addRow("", self._noise_cb)
+
+        layout.addWidget(sensor_box)
+
+        self._sensor_combo.currentTextChanged.connect(self._on_sensor_changed)
+        self._custom_density_spin.valueChanged.connect(self._update_sensor_readouts)
+        self._custom_odr_spin.valueChanged.connect(self._update_sensor_readouts)
+        # Update \u03c3 readout when sample rate changes too
+        self._rate_spin.valueChanged.connect(self._update_sensor_readouts)
+        self._on_sensor_changed(self._sensor_combo.currentText())
 
         # Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
@@ -264,14 +308,68 @@ class ExportFieldVsTimeDialog(QDialog):
     def include_imu(self):
         return self._imu_cb.isChecked()
 
+    def sensor_profile(self):
+        """Return the SensorProfile for the current selection.
+
+        For built-in profiles this is the registered instance; for
+        "Custom..." it's a freshly constructed SensorProfile from the
+        custom-density / max-ODR spinners.
+        """
+        name = self._sensor_combo.currentText()
+        if name == "Custom...":
+            return SensorProfile(
+                name="custom",
+                noise_density_nT_sqrtHz=self._custom_density_spin.value(),
+                max_odr_hz=self._custom_odr_spin.value(),
+                technology="user-defined",
+            )
+        return sensor_profile_mod.get(name)
+
     def noise_sigma_uT(self):
-        """Return noise sigma in µT, or 0 if disabled."""
-        if self._noise_cb.isChecked():
-            return self._noise_spin.value()
-        return 0.0
+        """Per-sample σ in µT for the current sensor + sample rate, or 0
+        if noise injection is disabled."""
+        if not self._noise_cb.isChecked():
+            return 0.0
+        return self.sensor_profile().per_sample_sigma_uT(self.sampling_rate())
 
     def sample_count(self):
         return max(int(self.duration() * self.sampling_rate()) + 1, 2)
+
+    # ------------------------------------------------------------------
+    # Sensor profile UI plumbing
+    # ------------------------------------------------------------------
+
+    def _on_sensor_changed(self, name):
+        is_custom = (name == "Custom...")
+        self._custom_density_spin.setVisible(is_custom)
+        self._custom_density_label.setVisible(is_custom)
+        self._custom_odr_spin.setVisible(is_custom)
+        self._custom_odr_label.setVisible(is_custom)
+
+        # Clamp the sample-rate spinner to the profile's max ODR
+        prof = self.sensor_profile()
+        max_odr = prof.max_odr_hz
+        if np.isfinite(max_odr):
+            self._rate_spin.setMaximum(max_odr)
+            if self._rate_spin.value() > max_odr:
+                self._rate_spin.setValue(max_odr)
+        else:
+            self._rate_spin.setMaximum(1e9)
+
+        self._update_sensor_readouts()
+
+    def _update_sensor_readouts(self):
+        prof = self.sensor_profile()
+        self._sensor_density_label.setText(
+            f"{prof.noise_density_nT_sqrtHz:.1f} nT/√Hz"
+        )
+        if np.isfinite(prof.max_odr_hz):
+            self._sensor_odr_label.setText(f"{prof.max_odr_hz:.0f} Hz")
+        else:
+            self._sensor_odr_label.setText("(unconstrained)")
+        sigma_uT = prof.per_sample_sigma_uT(self._rate_spin.value())
+        self._sensor_sigma_label.setText(f"{sigma_uT:.3f} µT")
+        self._sensor_notes_label.setText(prof.notes or "")
 
 
 class _InversionWorker(QThread):
@@ -2192,6 +2290,7 @@ class Visualizer:
         use_rotation = dlg.apply_rotation()
         use_imu = dlg.include_imu()
         noise_sigma = dlg.noise_sigma_uT()
+        sensor_prof = dlg.sensor_profile()
         path_length = sp.length
 
         # Ask for output file
@@ -2288,7 +2387,11 @@ class Visualizer:
             if use_imu:
                 notes.append("imu=true")
             if noise_sigma > 0:
-                notes.append(f"noise={noise_sigma}uT")
+                notes.append(
+                    f"sensor={sensor_prof.name}, "
+                    f"noise_density={sensor_prof.noise_density_nT_sqrtHz:g}nT/sqrtHz, "
+                    f"sigma={noise_sigma:.4g}uT"
+                )
             note_str = ", " + ", ".join(notes) if notes else ""
             f.write(
                 f"# Magnesys v{project.CURRENT_VERSION} — "
