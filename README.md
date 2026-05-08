@@ -231,6 +231,41 @@ Numbers are best-effort estimates from public datasheets — refine
 against the operating mode (OSR, drive current, cycle count) you
 actually plan to use.
 
+### Reproducing experiments
+
+`docs/inversion_log.md` is a chronological log of inversion experiments
+(coil-geometry sweeps, frequency/window sweeps, sensor noise, dual-
+sensor and trajectory studies). Experiments 1-14 were one-off
+development work; the parameters are documented in the log but the
+exact scripts weren't committed at the time. Experiments 15 onward have
+self-contained, re-runnable scripts under `demos/`.
+
+| Exp | Topic | Reproduce |
+|----:|-------|-----------|
+|  1  | Initial 3-DOF inversion (12 cm scale)  | no committed script — see log for parameters |
+|  2  | Frequency grouping fix                  | no committed script |
+|  3  | Window length sweep (stationary)        | no committed script |
+|  4  | Moving trace, 3-period window           | no committed script |
+|  5  | Current strength scaling                | no committed script |
+|  6  | First 6-DOF inversion + SVD init        | no committed script |
+|  7  | 4-DOF + IMU tilt                        | no committed script |
+|  8  | Cage scale baseline (0.5 m)             | no committed script |
+|  9  | Coil geometry sweep                     | no committed script |
+| 10  | Multipass inversion                     | no committed script |
+| 11  | Excitation frequency sweep              | no committed script |
+| 12  | Orientation-first 6-DOF                 | no committed script |
+| 13  | Fixed window duration, varying freq.    | no committed script |
+| 14  | Noise injection (1 kHz, 0.5 m cage)     | no committed script — was the motivation for `SensorProfile` (Exp 15+) |
+| 15  | Sensor-realistic re-run at 1 m cube     | `python demos/experiment_15_sensor_realistic.py` |
+| 16  | Analog frontend recovers 1 kHz lock-in  | `python demos/experiment_16_analog_frontend.py` |
+| 17  | Smaller cage (0.75 m), same coils       | `python demos/experiment_17_smaller_cage.py` |
+| 18  | Dual-magnetometer backpack              | `python demos/experiment_18_dual_magnetometer.py` |
+| 19  | Lissajous trajectory, robust 6-DOF init | `python demos/experiment_19_lissajous_trajectory.py` |
+
+Most experiment scripts accept `--quick` for a fast lower-resolution
+pass and `--duration N` to override the trajectory length. See each
+script's `--help` for the full set of flags.
+
 ## Adding New Geometries
 
 For geometries with closed-form field solutions, subclass `CurrentLoop` directly:
