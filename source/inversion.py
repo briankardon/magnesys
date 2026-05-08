@@ -21,6 +21,8 @@ The inversion uses a two-stage approach:
   - Fine: scipy.optimize.least_squares refinement from the coarse estimate
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.optimize import least_squares
@@ -1152,6 +1154,542 @@ def invert_trace_6dof(field_table, t, signal, window_periods=1.0,
         rotations.append(rot)
         prev_pos = pos
         prev_rotvec = rot.as_rotvec()
+
+        if progress_fn is not None:
+            progress_fn(i + 1, n_windows)
+
+    return t_positions, positions, rotations, uncertainties
+
+
+# ----------------------------------------------------------------------
+# Dual-sensor inversion (two co-rotating magnetometers on a rigid PCB)
+# ----------------------------------------------------------------------
+#
+# A dual-sensor backpack carries two magnetometers a fixed distance apart
+# in the body (sensor) frame.  The two readings differ because the field
+# varies in space; the difference encodes the local field gradient and
+# breaks orientation ambiguities that a single sensor cannot resolve
+# (notably the near-180° flip that single-sensor 6-DOF gets stuck on
+# in Exp. 15-17).
+#
+# Conventions:
+#   - r1 is sensor 1's lab-frame position (the inversion's "position")
+#   - d_sensor is the offset from sensor 1 to sensor 2 in the SENSOR frame
+#     (constant, set by PCB layout)
+#   - The PCB rotation R takes lab vectors to sensor-frame components, so
+#     a vector with sensor-frame components d_sensor has lab-frame
+#     components R⁻¹ · d_sensor
+#   - r2 = r1 + R⁻¹ · d_sensor
+#   - Both sensors are mounted parallel (share the same R)
+#
+# The original single-sensor `invert_trace`, `invert_trace_6dof`, etc. are
+# preserved unchanged for reproducibility of earlier experiments.
+
+
+@dataclass(frozen=True)
+class DualSensorConfig:
+    """Geometry of a two-magnetometer rigid mount.
+
+    Parameters
+    ----------
+    offset_sensor_frame : array-like, shape (3,)
+        Offset from sensor 1 to sensor 2 expressed in the sensor (body)
+        frame, in meters.  E.g. ``[0.03, 0, 0]`` for a 3 cm baseline along
+        the PCB's local +x axis.
+
+    Notes
+    -----
+    Both sensors are assumed to share the same orientation (parallel
+    mount).  Calibration tolerance on this offset matters: a 1 mm error
+    in offset translates to a small but real bias in the gradient
+    constraint.  PCB-level placement (~0.1 mm) is fine.
+    """
+
+    offset_sensor_frame: tuple
+
+    def offset_lab(self, rotation):
+        """Return the lab-frame offset between sensor 1 and sensor 2.
+
+        ``rotation`` is the lab-to-sensor rotation (the same convention as
+        the rest of this module).  In 3-DOF mode pass an identity rotation.
+        """
+        return rotation.inv().apply(np.asarray(self.offset_sensor_frame,
+                                              dtype=float))
+
+
+def _refine_dual_3dof(field_table, measurements_1, measurements_2,
+                      dual_config, initial_pos):
+    """Refine position with two magnetometers, fixed (identity) orientation.
+
+    The sensor frame and lab frame are aligned, so the lab-frame offset
+    equals the sensor-frame offset.  The optimizer balances residuals from
+    both sensors; the gradient signal between them adds geometric
+    constraint that improves position uniqueness near the field's
+    near-symmetric points.
+    """
+    target_1 = measurements_1.ravel()
+    target_2 = measurements_2.ravel()
+    scales = field_table._feature_scales
+    offset_lab = np.asarray(dual_config.offset_sensor_frame, dtype=float)
+
+    def residual(pos):
+        pos2 = pos + offset_lab
+        pred_1 = field_table.field_at(pos).ravel()
+        pred_2 = field_table.field_at(pos2).ravel()
+        r1 = (pred_1 - target_1) / scales
+        r2 = (pred_2 - target_2) / scales
+        return np.concatenate([r1, r2])
+
+    x_min, x_max, y_min, y_max, z_min, z_max = field_table.bounds
+    result = least_squares(
+        residual,
+        initial_pos,
+        bounds=([x_min, y_min, z_min], [x_max, y_max, z_max]),
+        method="trf",
+    )
+    sigma_xyz = _uncertainty_from_result(result)
+    return result.x, sigma_xyz
+
+
+def _refine_dual_6dof(field_table, measurements_1, measurements_2,
+                      dual_config, initial_pos, initial_rotvec=None):
+    """Refine position + orientation with two co-rotating magnetometers.
+
+    The 6-DOF residual stacks both sensors' channel-by-channel mismatches.
+    Because sensor 2's predicted field depends on R (through the lab-frame
+    offset), a wrong rotation that would happen to match sensor 1 alone
+    is generally inconsistent with sensor 2's measurement — the dual
+    constraint suppresses the near-180° local minima that trap the
+    single-sensor 6-DOF refinement.
+    """
+    if initial_rotvec is None:
+        initial_rotvec = np.zeros(3)
+    target_1 = measurements_1.ravel()
+    target_2 = measurements_2.ravel()
+    scales = field_table._feature_scales
+    offset_sensor = np.asarray(dual_config.offset_sensor_frame, dtype=float)
+
+    def residual(params):
+        pos = params[:3]
+        rotvec = params[3:6]
+        R = Rotation.from_rotvec(rotvec)
+        pos2 = pos + R.inv().apply(offset_sensor)
+        lab_fields_1 = field_table.field_at(pos)
+        lab_fields_2 = field_table.field_at(pos2)
+        sensor_fields_1 = np.empty_like(lab_fields_1)
+        sensor_fields_2 = np.empty_like(lab_fields_2)
+        for ch in range(len(lab_fields_1)):
+            sensor_fields_1[ch] = R.apply(lab_fields_1[ch])
+            sensor_fields_2[ch] = R.apply(lab_fields_2[ch])
+        r1 = (sensor_fields_1.ravel() - target_1) / scales
+        r2 = (sensor_fields_2.ravel() - target_2) / scales
+        return np.concatenate([r1, r2])
+
+    x0 = np.concatenate([initial_pos, initial_rotvec])
+    x_min, x_max, y_min, y_max, z_min, z_max = field_table.bounds
+    lb = [x_min, y_min, z_min, -np.pi, -np.pi, -np.pi]
+    ub = [x_max, y_max, z_max,  np.pi,  np.pi,  np.pi]
+    result = least_squares(residual, x0, bounds=(lb, ub), method="trf")
+
+    pos = result.x[:3]
+    rot = Rotation.from_rotvec(result.x[3:6])
+    sigma_all = _uncertainty_from_result(result)
+    sigma_xyz = sigma_all[:3]
+    return pos, rot, sigma_xyz
+
+
+def invert_trace_dual_3dof(field_table, t, signal_1, signal_2, dual_config,
+                           window_periods=1.0, progress_fn=None):
+    """3-DOF inversion using two magnetometers (fixed orientation)."""
+    freqs = field_table.frequencies
+    min_freq = freqs.min()
+    window_duration = window_periods / min_freq
+    dt = t[1] - t[0] if len(t) > 1 else 1.0
+    window_samples = max(int(window_duration / dt), 2)
+    step = max(window_samples // 2, 1)
+    n_windows = max((len(t) - window_samples) // step + 1, 1)
+
+    t_positions = np.empty(n_windows)
+    positions = np.empty((n_windows, 3))
+    uncertainties = np.empty((n_windows, 3))
+    prev_pos = None
+
+    for i in range(n_windows):
+        start = i * step
+        end = start + window_samples
+        if end > len(t):
+            end = len(t)
+            start = max(end - window_samples, 0)
+
+        t_win = t[start:end]
+        meas_1 = demodulate(t_win, signal_1[start:end], freqs)
+        meas_2 = demodulate(t_win, signal_2[start:end], freqs)
+
+        coarse = field_table.query_coarse(meas_1)
+        if prev_pos is not None:
+            grid_spacing = (
+                (field_table.bounds[1] - field_table.bounds[0])
+                / field_table.resolution
+            )
+            initial = (prev_pos
+                       if np.linalg.norm(coarse - prev_pos) < grid_spacing * 3
+                       else coarse)
+        else:
+            initial = coarse
+
+        refined, sigma = _refine_dual_3dof(
+            field_table, meas_1, meas_2, dual_config, initial,
+        )
+
+        t_positions[i] = (t_win[0] + t_win[-1]) / 2.0
+        positions[i] = refined
+        uncertainties[i] = sigma
+        prev_pos = refined
+
+        if progress_fn is not None:
+            progress_fn(i + 1, n_windows)
+
+    return t_positions, positions, uncertainties
+
+
+def invert_trace_dual_6dof(field_table, t, signal_1, signal_2, dual_config,
+                           window_periods=1.0, progress_fn=None):
+    """6-DOF inversion using two co-rotating magnetometers.
+
+    Initialisation strategy mirrors the single-sensor pipeline (rotation-
+    from-directions → coarse position → SVD rotation refine), but the
+    SVD step uses both sensors' demodulated vectors stacked into a single
+    Wahba problem with twice as many vector pairs.  The joint refinement
+    then enforces consistency at both sensor positions, breaking the
+    near-180° ambiguity that traps the single-sensor solver.
+    """
+    freqs = field_table.frequencies
+    min_freq = freqs.min()
+    window_duration = window_periods / min_freq
+    dt = t[1] - t[0] if len(t) > 1 else 1.0
+    window_samples = max(int(window_duration / dt), 2)
+    step = max(window_samples // 2, 1)
+    n_windows = max((len(t) - window_samples) // step + 1, 1)
+
+    offset_sensor = np.asarray(dual_config.offset_sensor_frame, dtype=float)
+
+    t_positions = np.empty(n_windows)
+    positions = np.empty((n_windows, 3))
+    uncertainties = np.empty((n_windows, 3))
+    rotations = []
+    prev_pos = None
+    prev_rotvec = None
+
+    for i in range(n_windows):
+        start = i * step
+        end = start + window_samples
+        if end > len(t):
+            end = len(t)
+            start = max(end - window_samples, 0)
+
+        t_win = t[start:end]
+        meas_1 = demodulate(t_win, signal_1[start:end], freqs)
+        meas_2 = demodulate(t_win, signal_2[start:end], freqs)
+
+        # Initial orientation from sensor 1 directions
+        if prev_rotvec is not None:
+            init_rotvec = prev_rotvec
+        else:
+            init_rotvec = _estimate_rotation_from_directions(meas_1)
+
+        # Coarse position search on un-rotated sensor 1 measurements
+        R_est = Rotation.from_rotvec(init_rotvec)
+        meas_lab = np.array([R_est.inv().apply(m) for m in meas_1])
+        coarse = field_table.query_coarse(meas_lab)
+        if prev_pos is not None:
+            grid_spacing = (
+                (field_table.bounds[1] - field_table.bounds[0])
+                / field_table.resolution
+            )
+            initial_pos = (prev_pos
+                           if np.linalg.norm(coarse - prev_pos) < grid_spacing * 3
+                           else coarse)
+        else:
+            initial_pos = coarse
+
+        # Refine rotation from BOTH sensors stacked (Wahba with 2K vectors)
+        lab_fields_1 = field_table.field_at(initial_pos)
+        lab_fields_2 = field_table.field_at(
+            initial_pos + R_est.inv().apply(offset_sensor)
+        )
+        all_lab = np.concatenate([lab_fields_1, lab_fields_2], axis=0)
+        all_meas = np.concatenate([meas_1, meas_2], axis=0)
+        init_rotvec = _estimate_rotation(all_lab, all_meas)
+
+        # Joint 6-DOF refinement
+        pos, rot, sigma = _refine_dual_6dof(
+            field_table, meas_1, meas_2, dual_config,
+            initial_pos, initial_rotvec=init_rotvec,
+        )
+
+        t_positions[i] = (t_win[0] + t_win[-1]) / 2.0
+        positions[i] = pos
+        uncertainties[i] = sigma
+        rotations.append(rot)
+        prev_pos = pos
+        prev_rotvec = rot.as_rotvec()
+
+        if progress_fn is not None:
+            progress_fn(i + 1, n_windows)
+
+    return t_positions, positions, rotations, uncertainties
+
+
+# ----------------------------------------------------------------------
+# Robust 6-DOF inversion (multi-start to escape 180° local minima)
+# ----------------------------------------------------------------------
+#
+# Background: Exp. 19 showed that on smooth trajectories where the bird
+# spends time at non-trivial orientations, both the single- and dual-
+# sensor 6-DOF inversions converge to a rotation that is ~180° from
+# truth at most windows.  Even with a noiseless ideal sensor the
+# orientation median was 176°.  Exp. 15-18's mostly-correct 6-DOF
+# results were therefore "lucky" — the SVD-based rotation initialiser
+# happened to land in the right basin for those particular trajectories.
+#
+# Two changes fix it:
+#
+# 1. Coarse position via rotation-invariant magnitudes
+#    (`query_coarse_rotated`) instead of the cardinal-axis-direction
+#    assumption.  The position estimate no longer depends on a possibly-
+#    wrong rotation guess.
+#
+# 2. Multi-start refinement: try the SVD seed plus three 180° flips about
+#    the cardinal axes, plus the previous window's rotation, run the
+#    least-squares refinement from each candidate, and keep the
+#    lowest-residual solution.
+#
+# The originals (`invert_trace_6dof`, `invert_trace_dual_6dof`) are kept
+# unchanged so earlier experiments stay reproducible.
+
+
+def _candidate_rotvecs(seed_rotvec, prev_rotvec=None):
+    """Build candidate initial rotations for multi-start refinement.
+
+    Returns the seed plus the seed composed with each of three 180°
+    rotations about the cardinal axes (which span the SVD's discrete
+    sign-flip ambiguity), plus ``prev_rotvec`` if provided.
+    """
+    seed_rotvec = np.asarray(seed_rotvec, dtype=float)
+    R_seed = Rotation.from_rotvec(seed_rotvec)
+    candidates = [seed_rotvec]
+    for axis in (np.array([1.0, 0.0, 0.0]),
+                 np.array([0.0, 1.0, 0.0]),
+                 np.array([0.0, 0.0, 1.0])):
+        R_flip = Rotation.from_rotvec(axis * np.pi)
+        candidates.append((R_flip * R_seed).as_rotvec())
+    if prev_rotvec is not None:
+        candidates.append(np.asarray(prev_rotvec, dtype=float))
+    return candidates
+
+
+def _final_residual_6dof(field_table, measurements, pos, rot):
+    target = measurements.ravel()
+    scales = field_table._feature_scales
+    lab_fields = field_table.field_at(pos)
+    sensor_fields = np.empty_like(lab_fields)
+    for ch in range(len(lab_fields)):
+        sensor_fields[ch] = rot.apply(lab_fields[ch])
+    return float(np.linalg.norm((sensor_fields.ravel() - target) / scales))
+
+
+def _final_residual_dual_6dof(field_table, measurements_1, measurements_2,
+                              dual_config, pos, rot):
+    target_1 = measurements_1.ravel()
+    target_2 = measurements_2.ravel()
+    scales = field_table._feature_scales
+    offset_sensor = np.asarray(dual_config.offset_sensor_frame, dtype=float)
+    pos2 = pos + rot.inv().apply(offset_sensor)
+    lab_fields_1 = field_table.field_at(pos)
+    lab_fields_2 = field_table.field_at(pos2)
+    sensor_fields_1 = np.empty_like(lab_fields_1)
+    sensor_fields_2 = np.empty_like(lab_fields_2)
+    for ch in range(len(lab_fields_1)):
+        sensor_fields_1[ch] = rot.apply(lab_fields_1[ch])
+        sensor_fields_2[ch] = rot.apply(lab_fields_2[ch])
+    r1 = (sensor_fields_1.ravel() - target_1) / scales
+    r2 = (sensor_fields_2.ravel() - target_2) / scales
+    return float(np.linalg.norm(np.concatenate([r1, r2])))
+
+
+def invert_trace_6dof_robust(field_table, t, signal, window_periods=1.0,
+                             progress_fn=None):
+    """Multi-start 6-DOF inversion that escapes the 180° rotation trap.
+
+    Drop-in replacement for ``invert_trace_6dof`` with the same return
+    signature.  Preferred for smooth (non-bouncing) trajectories where
+    the original would otherwise lock into a wrong-basin rotation.
+    """
+    freqs = field_table.frequencies
+    min_freq = freqs.min()
+    window_duration = window_periods / min_freq
+    dt = t[1] - t[0] if len(t) > 1 else 1.0
+    window_samples = max(int(window_duration / dt), 2)
+    step = max(window_samples // 2, 1)
+    n_windows = max((len(t) - window_samples) // step + 1, 1)
+
+    t_positions = np.empty(n_windows)
+    positions = np.empty((n_windows, 3))
+    uncertainties = np.empty((n_windows, 3))
+    rotations = []
+    prev_pos = None
+    prev_rotvec = None
+
+    for i in range(n_windows):
+        start = i * step
+        end = start + window_samples
+        if end > len(t):
+            end = len(t)
+            start = max(end - window_samples, 0)
+
+        t_win = t[start:end]
+        sig_win = signal[start:end]
+        measurements = demodulate(t_win, sig_win, freqs)
+
+        # Coarse position via rotation-invariant magnitude search
+        coarse = field_table.query_coarse_rotated(measurements)
+        if prev_pos is not None:
+            grid_spacing = (
+                (field_table.bounds[1] - field_table.bounds[0])
+                / field_table.resolution
+            )
+            initial_pos = (prev_pos
+                           if np.linalg.norm(coarse - prev_pos) < grid_spacing * 3
+                           else coarse)
+        else:
+            initial_pos = coarse
+
+        # SVD rotation seed using actual lab fields at the coarse position
+        lab_fields = field_table.field_at(initial_pos)
+        svd_rotvec = _estimate_rotation(lab_fields, measurements)
+
+        # Multi-start refinement: SVD seed + three 180° flips + prev rotation
+        candidates = _candidate_rotvecs(svd_rotvec, prev_rotvec)
+        best_pos = best_rot = best_sigma = None
+        best_res = np.inf
+        for rv in candidates:
+            try:
+                p, r, s = _refine_6dof(
+                    field_table, measurements, initial_pos, initial_rotvec=rv,
+                )
+            except Exception:
+                continue
+            res = _final_residual_6dof(field_table, measurements, p, r)
+            if res < best_res:
+                best_res = res
+                best_pos, best_rot, best_sigma = p, r, s
+
+        t_positions[i] = (t_win[0] + t_win[-1]) / 2.0
+        positions[i] = best_pos
+        uncertainties[i] = best_sigma
+        rotations.append(best_rot)
+        prev_pos = best_pos
+        prev_rotvec = best_rot.as_rotvec()
+
+        if progress_fn is not None:
+            progress_fn(i + 1, n_windows)
+
+    return t_positions, positions, rotations, uncertainties
+
+
+def invert_trace_dual_6dof_robust(field_table, t, signal_1, signal_2,
+                                  dual_config, window_periods=1.0,
+                                  progress_fn=None):
+    """Multi-start dual-sensor 6-DOF inversion. Sister to
+    ``invert_trace_6dof_robust``; same drop-in signature as
+    ``invert_trace_dual_6dof``.
+
+    The SVD seed stacks both sensors' demodulated vectors into a single
+    Wahba problem (2K vector pairs); the multi-start refinement is then
+    over the dual-sensor residual.
+    """
+    freqs = field_table.frequencies
+    min_freq = freqs.min()
+    window_duration = window_periods / min_freq
+    dt = t[1] - t[0] if len(t) > 1 else 1.0
+    window_samples = max(int(window_duration / dt), 2)
+    step = max(window_samples // 2, 1)
+    n_windows = max((len(t) - window_samples) // step + 1, 1)
+
+    offset_sensor = np.asarray(dual_config.offset_sensor_frame, dtype=float)
+
+    t_positions = np.empty(n_windows)
+    positions = np.empty((n_windows, 3))
+    uncertainties = np.empty((n_windows, 3))
+    rotations = []
+    prev_pos = None
+    prev_rotvec = None
+
+    for i in range(n_windows):
+        start = i * step
+        end = start + window_samples
+        if end > len(t):
+            end = len(t)
+            start = max(end - window_samples, 0)
+
+        t_win = t[start:end]
+        meas_1 = demodulate(t_win, signal_1[start:end], freqs)
+        meas_2 = demodulate(t_win, signal_2[start:end], freqs)
+
+        # Coarse position via magnitude search on sensor 1
+        coarse = field_table.query_coarse_rotated(meas_1)
+        if prev_pos is not None:
+            grid_spacing = (
+                (field_table.bounds[1] - field_table.bounds[0])
+                / field_table.resolution
+            )
+            initial_pos = (prev_pos
+                           if np.linalg.norm(coarse - prev_pos) < grid_spacing * 3
+                           else coarse)
+        else:
+            initial_pos = coarse
+
+        # SVD rotation seed using BOTH sensors. We need an estimate of
+        # sensor 2's lab-frame position to evaluate its lab-frame field;
+        # the previous window's rotation (or identity) is good enough to
+        # locate sensor 2 to within a few mm — far better than the
+        # gradient signal scale.
+        if prev_rotvec is not None:
+            R_guess = Rotation.from_rotvec(prev_rotvec)
+        else:
+            R_guess = Rotation.identity()
+        lab_fields_1 = field_table.field_at(initial_pos)
+        lab_fields_2 = field_table.field_at(
+            initial_pos + R_guess.inv().apply(offset_sensor)
+        )
+        all_lab = np.concatenate([lab_fields_1, lab_fields_2], axis=0)
+        all_meas = np.concatenate([meas_1, meas_2], axis=0)
+        svd_rotvec = _estimate_rotation(all_lab, all_meas)
+
+        # Multi-start refinement
+        candidates = _candidate_rotvecs(svd_rotvec, prev_rotvec)
+        best_pos = best_rot = best_sigma = None
+        best_res = np.inf
+        for rv in candidates:
+            try:
+                p, r, s = _refine_dual_6dof(
+                    field_table, meas_1, meas_2, dual_config, initial_pos,
+                    initial_rotvec=rv,
+                )
+            except Exception:
+                continue
+            res = _final_residual_dual_6dof(field_table, meas_1, meas_2,
+                                            dual_config, p, r)
+            if res < best_res:
+                best_res = res
+                best_pos, best_rot, best_sigma = p, r, s
+
+        t_positions[i] = (t_win[0] + t_win[-1]) / 2.0
+        positions[i] = best_pos
+        uncertainties[i] = best_sigma
+        rotations.append(best_rot)
+        prev_pos = best_pos
+        prev_rotvec = best_rot.as_rotvec()
 
         if progress_fn is not None:
             progress_fn(i + 1, n_windows)

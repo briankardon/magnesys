@@ -52,6 +52,15 @@ class SamplePath(ABC):
     def from_dict(cls, data):
         """Construct from a dict produced by to_dict()."""
 
+    @property
+    def is_closed(self):
+        """True iff the path's start and end points coincide.
+
+        Closed paths can be traversed by looping (no tangent reversal at
+        endpoints); open paths must be ping-ponged or stopped at the end.
+        """
+        return False
+
     # ---- registry for deserialization ----
 
     _registry: dict[str, type] = {}
@@ -299,3 +308,115 @@ class SplinePath(SamplePath):
 
     def __repr__(self):
         return f"SplinePath({len(self.points)} points, length={self.length:.4g} m)"
+
+
+@SamplePath.register
+class LissajousPath(SamplePath):
+    """A naturally closed 3D Lissajous figure.
+
+    Parametrised by τ ∈ [0, 2π]:
+
+        x(τ) = Ax · sin(kx · τ + φx)
+        y(τ) = Ay · sin(ky · τ + φy)
+        z(τ) = Az · sin(kz · τ + φz)
+
+    With integer ratios kx, ky, kz the path closes after a single period
+    (start point coincides with end point), so it can be traversed in
+    "loop" mode without ever reversing direction. Smooth and continuous
+    everywhere — useful as a test trajectory that exercises both
+    position and orientation tracking without the artifacts that
+    open-ended paths introduce when ping-ponged.
+
+    Parameters
+    ----------
+    amplitudes : array_like, shape (3,)
+        Per-axis amplitudes (Ax, Ay, Az) in meters.
+    ratios : array_like, shape (3,) of int
+        Integer frequency ratios (kx, ky, kz). Coprime triples produce
+        the most varied figures (e.g. (3, 4, 5) or (5, 7, 8)).
+    phases : array_like, shape (3,), optional
+        Per-axis phase offsets in radians. Default: (0, π/2, π/4).
+    """
+
+    path_type = "lissajous"
+
+    def __init__(self, amplitudes, ratios, phases=None):
+        self.amplitudes = np.asarray(amplitudes, dtype=float)
+        self.ratios = np.asarray(ratios, dtype=int)
+        if phases is None:
+            phases = (0.0, np.pi / 2, np.pi / 4)
+        self.phases = np.asarray(phases, dtype=float)
+        for arr, name in ((self.amplitudes, "amplitudes"),
+                          (self.ratios, "ratios"),
+                          (self.phases, "phases")):
+            if arr.shape != (3,):
+                raise ValueError(f"{name} must have shape (3,)")
+        if not np.all(np.equal(np.mod(self.ratios, 1), 0)):
+            raise ValueError("ratios must be integer-valued for closure")
+
+    # ---- internal evaluation ----
+
+    def _evaluate(self, taus):
+        taus = np.asarray(taus, dtype=float)
+        x = self.amplitudes[0] * np.sin(self.ratios[0] * taus + self.phases[0])
+        y = self.amplitudes[1] * np.sin(self.ratios[1] * taus + self.phases[1])
+        z = self.amplitudes[2] * np.sin(self.ratios[2] * taus + self.phases[2])
+        return np.column_stack([x, y, z])
+
+    def _arclength_table(self, n_dense=4000):
+        """Densely sampled (tau, cumulative arc length) lookup."""
+        taus = np.linspace(0.0, 2.0 * np.pi, n_dense)
+        pts = self._evaluate(taus)
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        return taus, pts, cum
+
+    # ---- SamplePath interface ----
+
+    @property
+    def length(self):
+        _, _, cum = self._arclength_table()
+        return float(cum[-1])
+
+    @property
+    def is_closed(self):
+        # x(0) = Ax·sin(φx) and x(2π) = Ax·sin(kx·2π + φx) = Ax·sin(φx) for
+        # any integer kx, similarly for y and z. So the path is always
+        # closed for integer ratios.
+        return True
+
+    def get_points(self, n):
+        taus, pts, cum = self._arclength_table()
+        target = np.linspace(0.0, cum[-1], n)
+        # Interpolate each axis component vs cumulative arc length
+        out = np.column_stack([
+            np.interp(target, cum, pts[:, i]) for i in range(3)
+        ])
+        return out
+
+    def get_distances(self, n):
+        return np.linspace(0.0, self.length, n)
+
+    # ---- serialization ----
+
+    def to_dict(self):
+        return {
+            "path_type": self.path_type,
+            "amplitudes": self.amplitudes.tolist(),
+            "ratios": self.ratios.tolist(),
+            "phases": self.phases.tolist(),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            amplitudes=data["amplitudes"],
+            ratios=data["ratios"],
+            phases=data.get("phases"),
+        )
+
+    def __repr__(self):
+        return (
+            f"LissajousPath(A={self.amplitudes.tolist()}, "
+            f"k={self.ratios.tolist()}, length={self.length:.4g} m)"
+        )

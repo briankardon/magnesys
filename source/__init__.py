@@ -3,7 +3,7 @@ from .path_based_loop import PathBasedLoop
 from .circular_current_loop import CircularCurrentLoop
 from .round_rect_current_loop import RoundRectCurrentLoop
 from .infinite_line_current import InfiniteLineCurrent
-from .path import SamplePath, LineSegmentPath
+from .path import SamplePath, LineSegmentPath, LissajousPath
 from .simulation import Simulation
 from .visualization import Visualizer
 from .sensor_profile import SensorProfile
@@ -19,6 +19,7 @@ __all__ = [
     "InfiniteLineCurrent",
     "SamplePath",
     "LineSegmentPath",
+    "LissajousPath",
     "Simulation",
     "Visualizer",
     "SensorProfile",

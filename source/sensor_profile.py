@@ -195,6 +195,24 @@ register(SensorProfile(
     ),
 ))
 
+register(SensorProfile(
+    name="TMR_analog_nRF52",
+    noise_density_nT_sqrtHz=5.0,
+    max_odr_hz=50000.0,
+    technology="analog TMR + InAmp + nRF52832 SAADC",
+    mass_mg=80.0,
+    power_uW=15000.0,
+    notes=(
+        "Analog TMR magnetometer (e.g. NVE AAL024 or MMT MMR3-50J) -> "
+        "AD8421 instrumentation amp (~500x gain, AC-coupled to reject "
+        "Earth field) -> nRF52832 SAADC in 3-channel scan mode at "
+        "~50 kSPS/axis with 14-bit oversampling. Field-referred noise "
+        "estimated for a real wearable build (sensor + amp + ADC + "
+        "board pickup); enables true 1 kHz lock-in unlike integrated "
+        "digital parts."
+    ),
+))
+
 # Default profile name (what the GUI/CLI pick if nothing is specified).
 DEFAULT_NAME = "MLX90393"
 
